@@ -1,0 +1,2 @@
+{"id":"./","name":"MK裁量 候補・トレード記録 V0.2","short_name":"MK記録V0.2","description":"V0.2候補・トレードと判断時画像を端末内に記録","lang":"ja","start_url":"./index.html","scope":"./","display":"standalone","background_color":"#07111a","theme_color":"#0b1722","icons":[{"src":"icon-192.png","sizes":"192x192","type":"image/png","purpose":"any"},{"src":"icon-512.png","sizes":"512x512","type":"image/png","purpose":"any"},{"src":"icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any"}]}
+
