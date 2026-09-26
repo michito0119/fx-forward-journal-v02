@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b1722">
+  <meta name="description" content="MK裁量V0.2フォワードの候補・トレードを画像とともに端末内へ記録するアプリ">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <link rel="stylesheet" href="style.css?v=20260927-1">
+  <title>MK裁量 候補・トレード記録 V0.2</title>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">MK</span><div><strong>裁量トレード記録</strong><small>候補 V0.2 · 遵守基準 V1.1 · 2026-09-24 23:43 JST開始</small></div></div>
+    <span class="local-badge">端末内保存</span>
+  </header>
+
+  <main class="shell">
+    <div id="launchWarning" class="notice" hidden role="alert"><strong>この開き方では保存できません。</strong><p><code>index.html</code> を直接開かず、同じフォルダの <code>起動.cmd</code> をダブルクリックしてください。ブラウザで最新の記録画面が開きます。</p></div>
+    <section class="hero">
+      <p class="eyebrow">FORWARD TEST JOURNAL</p>
+      <h1>判断した瞬間を、そのまま残す。</h1>
+      <p>サインはエントリー指示ではありません。まず判断理由を一言と画像で記録。PC・Androidそれぞれの端末内に保存し、自動同期はしません。取引価格・損益は後日、取引履歴と照合します。</p>
+      <div class="counts" aria-live="polite"><div><strong id="countCandidates">0</strong><span>候補</span></div><div><strong id="countTrades">0</strong><span>実行トレード</span></div><div><strong id="countImages">0</strong><span>添付画像</span></div></div>
+    </section>
+    <aside id="installPanel" class="install-panel" hidden>
+      <div><strong>Androidのホーム画面から開く</strong><p>Chromeのメニュー「アプリをインストール」または「ホーム画面に追加」を選んでください。記録と画像はこの端末内に保存され、PCとは自動同期しません。</p></div>
+      <button type="button" id="installButton" class="quiet" hidden>ホーム画面に追加</button>
+    </aside>
+
+    <nav class="tabs" aria-label="記録画面">
+      <button class="tab active" type="button" data-view="candidates" aria-current="page"><span class="tab-icon" aria-hidden="true">🔔</span>候補</button>
+      <button class="tab" type="button" data-view="trades"><span class="tab-icon" aria-hidden="true">📋</span>トレード</button>
+      <button class="tab" type="button" data-view="holdings"><span class="tab-icon" aria-hidden="true">📌</span>保有中</button>
+      <button class="tab" type="button" data-view="records"><span class="tab-icon" aria-hidden="true">📚</span>履歴</button>
+    </nav>
+
+    <section id="view-candidates" class="view active">
+      <div class="section-head"><div><p class="eyebrow">CANDIDATE</p><h2>候補・見送りの記録</h2></div><button type="button" class="quiet" id="newCandidate">新規入力</button></div>
+      <p class="hint">サインが出て見送った場面も、サインなしで入りたいと思った場面も残します。</p>
+      <form id="candidateForm" class="form-card">
+        <input type="hidden" name="id">
+        <div class="grid two">
+          <label>候補発生日時 <span class="req">必須・JST</span><input required type="datetime-local" name="candidateTime"></label>
+          <label>通貨ペア <span class="req">必須</span><select required name="pair"><option value="">選択</option><option>USD/JPY</option><option>EUR/USD</option><option>USD/CHF</option><option>EUR/JPY</option><option>CHF/JPY</option></select></label>
+          <label>方向 <span class="req">必須</span><select required name="direction"><option value="">選択</option><option>買い</option><option>売り</option></select></label>
+          <label>起点 <span class="req">必須</span><select required name="origin"><option>V0.2サイン</option><option>サインなし・本人発意</option></select></label>
+          <label>MK判断 <span class="req">必須</span><select required name="judgment"><option value="">選択</option><option>入る</option><option>待つ</option><option>見送る</option></select></label>
+        </div>
+        <label>判断した理由を一言<textarea name="decisionComment" rows="3" placeholder="なぜ入る／待つ／見送るか。スマホの音声入力も使えます"></textarea></label>
+        <details class="optional-fields"><summary>詳しいチャートメモ（必要な時だけ）</summary>
+        <fieldset><legend>候補発生理由 <small>該当するものを複数選択可</small></legend><div class="checks"><label><input type="checkbox" name="reasons" value="H4・21SMAへの押し目（買い）">H4・21SMAへの押し目（買い）</label><label><input type="checkbox" name="reasons" value="H4・21SMAへの戻り（売り）">H4・21SMAへの戻り（売り）</label><label><input type="checkbox" name="reasons" value="サインなし・本人発意">サインなし・本人発意</label><label><input type="checkbox" name="reasons" value="その他・不明">その他・不明</label></div><p class="micro">V0.2の21SMA条件を指します。過去の裁量取引で使っていたMA期間を断定するものではありません。</p></fieldset>
+        <div class="grid three"><label>D1の認識<textarea name="d1View" rows="3" placeholder="方向・構造・この取引での役割"></textarea></label><label>H4の認識<textarea name="h4View" rows="3" placeholder="方向・ダウ・セットアップ"></textarea></label><label>H1の認識<textarea name="h1View" rows="3" placeholder="使用しない場合は「使用なし」"></textarea></label></div>
+        <div class="grid two"><label>H4の役割<input name="h4Role" list="h4Roles" placeholder="複数なら併記"></label><label>セットアップ種類<input name="setup" list="setups" placeholder="例：転換、三尊、3波"></label><label>最終判断時間足<select name="decisionTf"><option value="">未記録</option><option>D1</option><option>H4</option><option>H1</option><option>複数時間足の組合せ</option><option>分からない</option></select></label><label>最終トリガー<input name="trigger" list="triggers" placeholder="例：ネックラインブレイク"></label></div>
+        </details>
+        <datalist id="h4Roles"><option value="環境認識"><option value="トレンド方向確認"><option value="転換認識"><option value="押し目／戻りのセットアップ"><option value="チャートパターン形成"><option value="ダウ転換確認"><option value="ブレイク確認"><option value="リターンムーブ確認"><option value="3波／C波の認識"><option value="MAによる確認"><option value="エントリートリガー"><option value="利確目標・到達方向の判断"><option value="特に使用していない"><option value="分からない"></datalist>
+        <datalist id="setups"><option value="順張り"><option value="転換"><option value="3波"><option value="C波"><option value="三尊・逆三尊"><option value="ダブルトップ・ダブルボトム"><option value="リターンムーブ"><option value="MA転換"><option value="MA回帰"><option value="その他"><option value="分からない"></datalist>
+        <datalist id="triggers"><option value="ダウ転換"><option value="高値・安値ブレイク"><option value="リターンムーブ"><option value="三尊・逆三尊"><option value="ダブルトップ・ダブルボトム"><option value="MA転換"><option value="MA回帰"><option value="3波"><option value="C波"><option value="その他"><option value="分からない"></datalist>
+        <div class="upload-box"><div><strong>📷 判断時点のチャート画像</strong><p>スクリーンショットを選択。複数添付できます。</p></div><div class="upload-actions"><label class="upload-button"><span class="upload-icon" aria-hidden="true">🖼</span>タップして画像を選択<input type="file" accept="image/*" multiple class="image-input" data-kind="candidate" hidden></label><label class="upload-button secondary">カメラ<input type="file" accept="image/*" capture="environment" class="image-input" data-kind="candidate" hidden></label></div><div id="candidateImages" class="image-grid"></div></div>
+        <div class="form-actions"><button class="primary" type="submit">候補を保存</button><span id="candidateStatus" role="status"></span></div>
+      </form>
+    </section>
+
+    <section id="view-trades" class="view">
+      <div class="section-head"><div><p class="eyebrow">TRADE</p><h2>エントリーを記録</h2></div><button type="button" class="quiet" id="newTrade">新規入力</button></div>
+      <p class="hint">入った理由・画像・初期Stopを先に記録。価格と損益は入力せず、後日取引履歴と照合します。</p>
+      <form id="tradeForm" class="form-card">
+        <input type="hidden" name="id">
+        <div class="grid two"><label>紐づく候補<select name="candidateId" id="candidateSelect"><option value="">候補なし・後で紐づける</option></select></label><label>実取引／デモ <span class="req">必須</span><select required name="accountType"><option>実取引</option><option>デモ</option></select></label><label>通貨ペア <span class="req">必須</span><select required name="pair"><option value="">選択</option><option>USD/JPY</option><option>EUR/USD</option><option>USD/CHF</option><option>EUR/JPY</option><option>CHF/JPY</option></select></label><label>方向 <span class="req">必須</span><select required name="direction"><option value="">選択</option><option>買い</option><option>売り</option></select></label><label>エントリー日時 <span class="req">必須・JST</span><input required type="datetime-local" name="entryTime"></label></div>
+        <label>入った理由を一言<textarea name="entryComment" rows="3" placeholder="何を見て、この位置で入ったか。スマホの音声入力も使えます"></textarea></label>
+        <div class="grid two"><label>初期Stop（任意）<input type="number" step="any" inputmode="decimal" name="sl" placeholder="未入力でも保存できます"></label><label>Limit予定（任意）<input type="number" step="any" inputmode="decimal" name="tp" placeholder="トレーリングなら空欄で可"></label></div>
+        <div class="checks"><label><input type="checkbox" name="noStop">意図的にStopなしで入った</label><label><input type="checkbox" name="trailingPlanned">トレーリング予定</label></div>
+        <p class="micro">Stop空欄は「未記録」、Stopなしのチェックは「設定せず」を区別します。初期Stopなしの損益Rは算出不可です。</p>
+        <div class="upload-box entry-photo"><div><strong>📷 エントリー時のチャート画像</strong><p>入った時点のD1/H4/H1などを写真・スクリーンショットで保存。</p></div><div class="upload-actions"><label class="upload-button"><span class="upload-icon" aria-hidden="true">🖼</span>タップして画像を選択<input type="file" accept="image/*" multiple class="image-input" data-kind="trade" hidden></label><label class="upload-button secondary">カメラ<input type="file" accept="image/*" capture="environment" class="image-input" data-kind="trade" hidden></label></div><div id="tradeImages" class="image-grid"></div></div>
+        <details class="exit-fields"><summary>決済後に追記する項目</summary><label>決済日時（JST）<input type="datetime-local" name="exitTime"></label><label>決済した時の理由（一言）<textarea name="exitReason" rows="2" placeholder="例：目標到達、構造崩れ、裁量判断"></textarea></label><label>決済後レビュー<textarea name="postReview" rows="3"></textarea></label></details>
+        <details class="optional-fields"><summary>ルール遵守のメモ（任意・後からで可）</summary><label>ルール遵守（V1.1）<select name="compliance"><option value="">保留・未判定</option><option>○</option><option>×</option></select></label></details>
+        <div class="form-actions"><button class="primary" type="submit">トレードを保存</button><span id="tradeStatus" role="status"></span></div>
+      </form>
+    </section>
+
+    <section id="view-holdings" class="view"><div class="section-head"><div><p class="eyebrow">OPEN TRADES</p><h2>保有中</h2></div></div><p class="hint" id="holdingsCount">未決済のトレード 0件</p><div id="holdingList" class="record-list"></div></section>
+
+    <section id="view-records" class="view"><div class="section-head"><div><p class="eyebrow">JOURNAL</p><h2>記録一覧</h2></div></div><div class="segmented"><button class="selected" type="button" data-list="candidates">候補</button><button type="button" data-list="trades">トレード</button></div><div id="recordList" class="record-list"></div><details class="backup-drawer"><summary>PC・Androidの保存とバックアップ</summary><div class="notice"><strong>PCでもAndroidでも、それぞれのブラウザ内に記録・画像を保存します。</strong><p>自動同期はありません。ブラウザデータ削除に備え、画像込みJSONを定期的に書き出してください。端末間はそのJSONを手動で取り込みます。同じ記録を両端末で編集した場合、取り込み時に上書きしません。</p></div><div class="form-card backup-card"><button type="button" class="primary" id="exportBackup">画像込みバックアップ（JSON）</button><p>候補・トレード・添付画像を1ファイルにまとめます。復元用の正本です。</p><label class="upload-button">バックアップを取り込む<input type="file" id="importBackup" accept="application/json,.json" hidden></label><p>同じIDの記録は上書きせず、未登録の記録だけ追加します。</p><hr><button type="button" class="quiet" id="exportCandidatesCsv">候補CSVを書き出す</button><button type="button" class="quiet" id="exportTradesCsv">トレードCSVを書き出す</button><p class="micro">CSVには画像本体は含まれません。画像の保全にはJSONバックアップを使ってください。</p><p id="backupStatus" role="status"></p></div></details></section>
+  </main>
+
+  <dialog id="photoDialog" class="photo-dialog"><button type="button" id="closePhoto" aria-label="画像を閉じる">×</button><img id="fullPhoto" alt="添付チャート画像"></dialog>
+  <script>if (location.protocol === "file:") { document.getElementById("launchWarning").hidden = false; document.querySelectorAll("form button[type=submit]").forEach(button => button.disabled = true); }</script>
+  <script type="module" src="app.js?v=20260927-1"></script>
+</body>
+</html>
+
