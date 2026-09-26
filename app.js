@@ -3,7 +3,7 @@ import { PAIRS, RULE_VERSION, SCREENER_VERSION, jstNow, newId, toCsv, escapeHtml
 const DB_NAME = "mk-forward-journal-v02";
 const DB_VERSION = 1;
 const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
-const state = { listType: "candidates", pending: { candidate: [], trade: [] }, previewUrls: [], listUrls: [] };
+const state = { listType: "candidates", pending: { candidate: [], trade: [], exit: [] }, previewUrls: [], listUrls: [] };
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 
@@ -38,12 +38,12 @@ async function getOne(storeName, id) {
   });
 }
 
-async function saveRecord(storeName, record, files, kind) {
+async function saveRecord(storeName, record, attachments) {
   const db = await dbReady;
   return new Promise((resolve, reject) => {
     const tx = db.transaction([storeName, "images"], "readwrite");
     tx.objectStore(storeName).put(record);
-    for (const file of files) tx.objectStore("images").add({ id: newId("I"), recordId: record.id, kind, file, name: file.name, mime: file.type, addedAt: new Date().toISOString() });
+    for (const { file, kind } of attachments) tx.objectStore("images").add({ id: newId("I"), recordId: record.id, kind, file, name: file.name, mime: file.type, addedAt: new Date().toISOString() });
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
     tx.onabort = () => reject(tx.error || new Error("保存が中断されました"));
@@ -78,7 +78,7 @@ function previewButton(file, pending) {
 async function renderImages(kind, recordId = "") {
   const holder = $(`#${kind}Images`);
   holder.replaceChildren();
-  const saved = recordId ? (await getAll("images")).filter(item => item.recordId === recordId) : [];
+  const saved = recordId ? (await getAll("images")).filter(item => item.recordId === recordId && item.kind === kind) : [];
   for (const image of saved) holder.append(previewButton(image.file, false));
   for (const file of state.pending[kind]) holder.append(previewButton(file, true));
   if (!saved.length && !state.pending[kind].length) { const note = document.createElement("span"); note.className = "micro"; note.textContent = "画像はまだありません"; holder.append(note); }
@@ -91,6 +91,7 @@ function resetForm(kind) {
   if (kind === "trade") form.elements.namedItem("sl").disabled = false;
   state.pending[kind] = [];
   renderImages(kind);
+  if (kind === "trade") { state.pending.exit = []; renderImages("exit"); }
   setStatus(kind === "candidate" ? "#candidateStatus" : "#tradeStatus", "");
 }
 
@@ -126,13 +127,18 @@ function renderListRows(rows, images, holder, type) {
   revokeListImages();
   holder.replaceChildren();
   if (!rows.length) { holder.innerHTML = `<div class="empty">${type === "trades" && holder.id === "holdingList" ? "保有中のトレードはありません" : "まだ記録がありません"}</div>`; return; }
-  const counts = new Map(); for (const image of images) counts.set(image.recordId, (counts.get(image.recordId) || 0) + 1);
+  const imagesByRecord = new Map();
+  for (const image of images) {
+    if (!imagesByRecord.has(image.recordId)) imagesByRecord.set(image.recordId, []);
+    imagesByRecord.get(image.recordId).push(image);
+  }
   rows.sort((a, b) => (type === "candidates" ? b.candidateTime.localeCompare(a.candidateTime) : b.entryTime.localeCompare(a.entryTime)));
   for (const row of rows) {
     const card = document.createElement("article"); card.className = "record-card";
     const when = type === "candidates" ? row.candidateTime : row.entryTime;
     const detail = type === "candidates" ? `${row.origin} · ${row.judgment}` : `${row.accountType} · ${row.compliance || "遵守保留"}`;
-    const firstImage = images.find(image => image.recordId === row.id);
+    const recordImages = imagesByRecord.get(row.id) || [];
+    const firstImage = (type === "trades" && recordImages.find(image => image.kind === "trade")) || recordImages[0];
     if (firstImage) {
       const thumbnail = document.createElement("img");
       thumbnail.className = "record-thumb";
@@ -142,7 +148,8 @@ function renderListRows(rows, images, holder, type) {
     } else {
       const thumbnail = document.createElement("div"); thumbnail.className = "record-thumb no-img"; thumbnail.textContent = "📊"; card.append(thumbnail);
     }
-    card.insertAdjacentHTML("beforeend", `<div class="record-info"><h3>${escapeHtml(row.pair)} <span class="${row.direction === "買い" ? "buy" : "sell"}">${escapeHtml(row.direction)}</span></h3><p>${escapeHtml(when?.replace("T", " "))} JST · ${escapeHtml(detail)}</p><small>画像 ${counts.get(row.id) || 0}枚 · ${escapeHtml(row.id)}</small></div><button type="button" class="quiet" data-edit="${escapeHtml(row.id)}" data-type="${type}">開く</button>`);
+    const imageSummary = type === "trades" ? `エントリー画像 ${recordImages.filter(image => image.kind === "trade").length}枚 · 決済画像 ${recordImages.filter(image => image.kind === "exit").length}枚` : `画像 ${recordImages.length}枚`;
+    card.insertAdjacentHTML("beforeend", `<div class="record-info"><h3>${escapeHtml(row.pair)} <span class="${row.direction === "買い" ? "buy" : "sell"}">${escapeHtml(row.direction)}</span></h3><p>${escapeHtml(when?.replace("T", " "))} JST · ${escapeHtml(detail)}</p><small>${escapeHtml(imageSummary)} · ${escapeHtml(row.id)}</small></div><button type="button" class="quiet" data-edit="${escapeHtml(row.id)}" data-type="${type}">開く</button>`);
     holder.append(card);
   }
 }
@@ -163,8 +170,10 @@ async function editRecord(type, id) {
   if (!record) return;
   showView(type);
   state.pending[kind] = [];
+  if (kind === "trade") state.pending.exit = [];
   fillForm($(`#${kind}Form`), record);
   await renderImages(kind, id);
+  if (kind === "trade") await renderImages("exit", id);
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
@@ -179,7 +188,7 @@ async function saveCandidate(event) {
     const now = new Date().toISOString();
     const candidate = { id, ruleVersion: previous?.ruleVersion || RULE_VERSION, screenerVersion: previous?.screenerVersion || SCREENER_VERSION, candidateTime: formValue(form, "candidateTime"), pair: formValue(form, "pair"), direction: formValue(form, "direction"), origin: formValue(form, "origin"), reasons: [...form.querySelectorAll('input[name="reasons"]:checked')].map(el => el.value), d1View: formValue(form, "d1View"), h4View: formValue(form, "h4View"), h1View: formValue(form, "h1View"), h4Role: formValue(form, "h4Role"), setup: formValue(form, "setup"), decisionTf: formValue(form, "decisionTf"), trigger: formValue(form, "trigger"), judgment: formValue(form, "judgment"), decisionComment: formValue(form, "decisionComment"), createdAt: previous?.createdAt || now, updatedAt: now };
     const imageCount = state.pending.candidate.length;
-    await saveRecord("candidates", candidate, state.pending.candidate, "candidate"); resetForm("candidate"); await refresh(); setStatus("#candidateStatus", `保存しました: ${id}（画像${imageCount}枚）`);
+    await saveRecord("candidates", candidate, state.pending.candidate.map(file => ({ file, kind: "candidate" }))); resetForm("candidate"); await refresh(); setStatus("#candidateStatus", `保存しました: ${id}（画像${imageCount}枚）`);
   }
   catch (error) { setStatus("#candidateStatus", `保存できませんでした: ${error.message}`, true); }
 }
@@ -199,8 +208,10 @@ async function saveTrade(event) {
     const keepRisk = previous?.sl === sl && stopStatus === "設定あり";
     const trade = { ...previous, id, candidateId: formValue(form, "candidateId"), ruleVersion: previous?.ruleVersion || RULE_VERSION, accountType: formValue(form, "accountType"), pair: formValue(form, "pair"), direction: formValue(form, "direction"), entryTime: formValue(form, "entryTime"), entryPrice: previous?.entryPrice ?? null, sl, stopStatus, tp: numericOrNull(formValue(form, "tp")), trailingPlanned: formChecked(form, "trailingPlanned"), riskYen: keepRisk ? previous.riskYen ?? null : null, compliance: formValue(form, "compliance"), entryComment: formValue(form, "entryComment"), exitTime: formValue(form, "exitTime"), exitPrice: previous?.exitPrice ?? null, pnlYen: previous?.pnlYen ?? null, pnlR: keepRisk ? previous.pnlR ?? null : null, exitReason: formValue(form, "exitReason"), postReview: formValue(form, "postReview"), createdAt: previous?.createdAt || now, updatedAt: now };
     trade.screenerVersion = previous?.screenerVersion || SCREENER_VERSION;
-    const imageCount = state.pending.trade.length;
-    await saveRecord("trades", trade, state.pending.trade, "trade"); resetForm("trade"); await refresh(); setStatus("#tradeStatus", `保存しました: ${id}（画像${imageCount}枚）`);
+    const entryImageCount = state.pending.trade.length;
+    const exitImageCount = state.pending.exit.length;
+    const attachments = [...state.pending.trade.map(file => ({ file, kind: "trade" })), ...state.pending.exit.map(file => ({ file, kind: "exit" }))];
+    await saveRecord("trades", trade, attachments); resetForm("trade"); await refresh(); setStatus("#tradeStatus", `保存しました: ${id}（エントリー画像${entryImageCount}枚・決済画像${exitImageCount}枚を追加）`);
   }
   catch (error) { setStatus("#tradeStatus", `保存できませんでした: ${error.message}`, true); }
 }
@@ -291,8 +302,9 @@ function wireEvents() {
     }
     input.value = "";
     try {
-      await renderImages(kind, $(`#${kind}Form`).elements.namedItem("id").value);
-      const message = `${state.pending[kind].length}枚選択済み。下の「${kind === "candidate" ? "候補" : "トレード"}を保存」で画像も保存します。${rejected ? `対応外または25MB超の画像${rejected}枚は除外しました。` : ""}`;
+      await renderImages(kind, kind === "candidate" ? $("#candidateForm").elements.namedItem("id").value : $("#tradeForm").elements.namedItem("id").value);
+      const label = kind === "exit" ? "決済画像" : kind === "trade" ? "エントリー画像" : "画像";
+      const message = `${label}${state.pending[kind].length}枚選択済み。下の「${kind === "candidate" ? "候補" : "トレード"}を保存」で画像も保存します。${rejected ? `対応外または25MB超の画像${rejected}枚は除外しました。` : ""}`;
       setStatus(kind === "candidate" ? "#candidateStatus" : "#tradeStatus", message, !!rejected);
     } catch (error) { setStatus(kind === "candidate" ? "#candidateStatus" : "#tradeStatus", `画像を表示できません: ${error.message}`, true); }
   }));
@@ -351,4 +363,3 @@ async function init() {
   if ("serviceWorker" in navigator && window.isSecureContext) navigator.serviceWorker.register("./sw.js").catch(() => {});
 }
 init();
-

@@ -8,7 +8,7 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icon-192.png">
-  <link rel="stylesheet" href="style.css?v=20260927-1">
+  <link rel="stylesheet" href="style.css?v=20260927-2">
   <title>MK裁量 候補・トレード記録 V0.2</title>
 </head>
 <body>
@@ -74,7 +74,7 @@
         <div class="checks"><label><input type="checkbox" name="noStop">意図的にStopなしで入った</label><label><input type="checkbox" name="trailingPlanned">トレーリング予定</label></div>
         <p class="micro">Stop空欄は「未記録」、Stopなしのチェックは「設定せず」を区別します。初期Stopなしの損益Rは算出不可です。</p>
         <div class="upload-box entry-photo"><div><strong>📷 エントリー時のチャート画像</strong><p>入った時点のD1/H4/H1などを写真・スクリーンショットで保存。</p></div><div class="upload-actions"><label class="upload-button"><span class="upload-icon" aria-hidden="true">🖼</span>タップして画像を選択<input type="file" accept="image/*" multiple class="image-input" data-kind="trade" hidden></label><label class="upload-button secondary">カメラ<input type="file" accept="image/*" capture="environment" class="image-input" data-kind="trade" hidden></label></div><div id="tradeImages" class="image-grid"></div></div>
-        <details class="exit-fields"><summary>決済後に追記する項目</summary><label>決済日時（JST）<input type="datetime-local" name="exitTime"></label><label>決済した時の理由（一言）<textarea name="exitReason" rows="2" placeholder="例：目標到達、構造崩れ、裁量判断"></textarea></label><label>決済後レビュー<textarea name="postReview" rows="3"></textarea></label></details>
+        <details class="exit-fields"><summary>決済後に追記する項目</summary><label>決済日時（JST）<input type="datetime-local" name="exitTime"></label><label>決済した時の理由（一言）<textarea name="exitReason" rows="2" placeholder="例：目標到達、構造崩れ、裁量判断"></textarea></label><label>決済後レビュー<textarea name="postReview" rows="3"></textarea></label><div class="upload-box exit-photo"><div><strong>📷 決済時のチャート画像</strong><p>決済判断時点の画像を追加。エントリー時の画像は消えず、別々に保存されます。</p></div><div class="upload-actions"><label class="upload-button"><span class="upload-icon" aria-hidden="true">🖼</span>タップして画像を選択<input type="file" accept="image/*" multiple class="image-input" data-kind="exit" hidden></label><label class="upload-button secondary">カメラ<input type="file" accept="image/*" capture="environment" class="image-input" data-kind="exit" hidden></label></div><div id="exitImages" class="image-grid"></div></div></details>
         <details class="optional-fields"><summary>ルール遵守のメモ（任意・後からで可）</summary><label>ルール遵守（V1.1）<select name="compliance"><option value="">保留・未判定</option><option>○</option><option>×</option></select></label></details>
         <div class="form-actions"><button class="primary" type="submit">トレードを保存</button><span id="tradeStatus" role="status"></span></div>
       </form>
@@ -87,7 +87,6 @@
 
   <dialog id="photoDialog" class="photo-dialog"><button type="button" id="closePhoto" aria-label="画像を閉じる">×</button><img id="fullPhoto" alt="添付チャート画像"></dialog>
   <script>if (location.protocol === "file:") { document.getElementById("launchWarning").hidden = false; document.querySelectorAll("form button[type=submit]").forEach(button => button.disabled = true); }</script>
-  <script type="module" src="app.js?v=20260927-1"></script>
+  <script type="module" src="app.js?v=20260927-2"></script>
 </body>
 </html>
-
