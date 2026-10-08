@@ -8,7 +8,7 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icon-192.png">
-  <link rel="stylesheet" href="style.css?v=20260927-2">
+  <link rel="stylesheet" href="style.css?v=20261008-1">
   <title>MK裁量 候補・トレード記録 V0.2</title>
 </head>
 <body>
@@ -59,7 +59,17 @@
         <datalist id="setups"><option value="順張り"><option value="転換"><option value="3波"><option value="C波"><option value="三尊・逆三尊"><option value="ダブルトップ・ダブルボトム"><option value="リターンムーブ"><option value="MA転換"><option value="MA回帰"><option value="その他"><option value="分からない"></datalist>
         <datalist id="triggers"><option value="ダウ転換"><option value="高値・安値ブレイク"><option value="リターンムーブ"><option value="三尊・逆三尊"><option value="ダブルトップ・ダブルボトム"><option value="MA転換"><option value="MA回帰"><option value="3波"><option value="C波"><option value="その他"><option value="分からない"></datalist>
         <div class="upload-box"><div><strong>📷 判断時点のチャート画像</strong><p>スクリーンショットを選択。複数添付できます。</p></div><div class="upload-actions"><label class="upload-button"><span class="upload-icon" aria-hidden="true">🖼</span>タップして画像を選択<input type="file" accept="image/*" multiple class="image-input" data-kind="candidate" hidden></label><label class="upload-button secondary">カメラ<input type="file" accept="image/*" capture="environment" class="image-input" data-kind="candidate" hidden></label></div><div id="candidateImages" class="image-grid"></div></div>
-        <div class="form-actions"><button class="primary" type="submit">候補を保存</button><span id="candidateStatus" role="status"></span></div>
+        <div class="entry-switch"><label><input type="checkbox" name="recordTrade" id="recordTradeWithCandidate">この候補でエントリーも記録する</label><p class="micro">トレードしない場合はチェック不要です。エントリーした場合は、この画面で候補とトレードを一度に保存できます。</p><p id="linkedTradeNotice" class="micro" hidden>この候補のトレードは記録済みです。履歴からトレードを開いて確認・追記できます。</p></div>
+        <div id="candidateTradeFields" class="candidate-entry-fields" hidden>
+          <p class="hint">通貨ペア・方向・候補画像は引き継ぎます。実際のエントリー内容だけ追加してください。</p>
+          <div class="grid two"><label>実取引／デモ <span class="req">必須</span><select name="candidateAccountType"><option>実取引</option><option>デモ</option></select></label><label>エントリー日時 <span class="req">必須・JST</span><input type="datetime-local" name="candidateEntryTime" data-entry-required></label></div>
+          <label>エントリー時の理由<textarea name="candidateEntryComment" rows="3" placeholder="候補時の判断理由を引き継ぎます。判断が変わった時だけ編集してください"></textarea></label>
+          <div class="grid two"><label>初期Stop（任意）<input type="number" step="any" inputmode="decimal" name="candidateSl" placeholder="未入力でも保存できます"></label><label>Limit予定（任意）<input type="number" step="any" inputmode="decimal" name="candidateTp" placeholder="トレーリングなら空欄で可"></label></div>
+          <div class="checks"><label><input type="checkbox" name="candidateNoStop">意図的にStopなしで入った</label><label><input type="checkbox" name="candidateTrailingPlanned">トレーリング予定</label></div>
+          <p class="micro">Stop空欄は「未記録」、Stopなしのチェックは「設定せず」です。候補画像は紐づくトレードからも見られます。</p>
+          <div class="upload-box entry-photo"><div><strong>📷 エントリー時の追加画像（任意）</strong><p>候補時とチャートが変わった場合だけ追加してください。</p></div><div class="upload-actions"><label class="upload-button"><span class="upload-icon" aria-hidden="true">🖼</span>タップして画像を選択<input type="file" accept="image/*" multiple class="image-input" data-kind="candidateTrade" hidden></label><label class="upload-button secondary">カメラ<input type="file" accept="image/*" capture="environment" class="image-input" data-kind="candidateTrade" hidden></label></div><div id="candidateTradeImages" class="image-grid"></div></div>
+        </div>
+        <div class="form-actions"><button class="primary" id="candidateSave" type="submit">候補を保存</button><span id="candidateStatus" role="status"></span></div>
       </form>
     </section>
 
@@ -74,6 +84,7 @@
         <div class="checks"><label><input type="checkbox" name="noStop">意図的にStopなしで入った</label><label><input type="checkbox" name="trailingPlanned">トレーリング予定</label></div>
         <p class="micro">Stop空欄は「未記録」、Stopなしのチェックは「設定せず」を区別します。初期Stopなしの損益Rは算出不可です。</p>
         <div class="upload-box entry-photo"><div><strong>📷 エントリー時のチャート画像</strong><p>入った時点のD1/H4/H1などを写真・スクリーンショットで保存。</p></div><div class="upload-actions"><label class="upload-button"><span class="upload-icon" aria-hidden="true">🖼</span>タップして画像を選択<input type="file" accept="image/*" multiple class="image-input" data-kind="trade" hidden></label><label class="upload-button secondary">カメラ<input type="file" accept="image/*" capture="environment" class="image-input" data-kind="trade" hidden></label></div><div id="tradeImages" class="image-grid"></div></div>
+        <div id="linkedCandidatePanel" class="linked-candidate-panel" hidden><strong>紐づく候補のチャート画像</strong><p class="micro">候補の画像を参照できます。エントリー時の追加画像が必要な場合だけ上の欄で添付してください。</p><div id="linkedCandidateImages" class="image-grid"></div></div>
         <details class="exit-fields"><summary>決済後に追記する項目</summary><label>決済日時（JST）<input type="datetime-local" name="exitTime"></label><label>決済した時の理由（一言）<textarea name="exitReason" rows="2" placeholder="例：目標到達、構造崩れ、裁量判断"></textarea></label><label>決済後レビュー<textarea name="postReview" rows="3"></textarea></label><div class="upload-box exit-photo"><div><strong>📷 決済時のチャート画像</strong><p>決済判断時点の画像を追加。エントリー時の画像は消えず、別々に保存されます。</p></div><div class="upload-actions"><label class="upload-button"><span class="upload-icon" aria-hidden="true">🖼</span>タップして画像を選択<input type="file" accept="image/*" multiple class="image-input" data-kind="exit" hidden></label><label class="upload-button secondary">カメラ<input type="file" accept="image/*" capture="environment" class="image-input" data-kind="exit" hidden></label></div><div id="exitImages" class="image-grid"></div></div></details>
         <details class="optional-fields"><summary>ルール遵守のメモ（任意・後からで可）</summary><label>ルール遵守（V1.1）<select name="compliance"><option value="">保留・未判定</option><option>○</option><option>×</option></select></label></details>
         <div class="form-actions"><button class="primary" type="submit">トレードを保存</button><span id="tradeStatus" role="status"></span></div>
@@ -87,6 +98,6 @@
 
   <dialog id="photoDialog" class="photo-dialog"><button type="button" id="closePhoto" aria-label="画像を閉じる">×</button><img id="fullPhoto" alt="添付チャート画像"></dialog>
   <script>if (location.protocol === "file:") { document.getElementById("launchWarning").hidden = false; document.querySelectorAll("form button[type=submit]").forEach(button => button.disabled = true); }</script>
-  <script type="module" src="app.js?v=20260927-2"></script>
+  <script type="module" src="app.js?v=20261008-1"></script>
 </body>
 </html>

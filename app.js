@@ -3,7 +3,7 @@ import { PAIRS, RULE_VERSION, SCREENER_VERSION, jstNow, newId, toCsv, escapeHtml
 const DB_NAME = "mk-forward-journal-v02";
 const DB_VERSION = 1;
 const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
-const state = { listType: "candidates", pending: { candidate: [], trade: [], exit: [] }, previewUrls: [], listUrls: [] };
+const state = { listType: "candidates", pending: { candidate: [], candidateTrade: [], trade: [], exit: [] }, previewUrls: [], listUrls: [] };
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 
@@ -50,6 +50,21 @@ async function saveRecord(storeName, record, attachments) {
   });
 }
 
+async function saveCandidateAndTrade(candidate, trade, candidateFiles, entryFiles) {
+  const db = await dbReady;
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(["candidates", "trades", "images"], "readwrite");
+    tx.objectStore("candidates").put(candidate);
+    tx.objectStore("trades").add(trade);
+    for (const [files, recordId, kind] of [[candidateFiles, candidate.id, "candidate"], [entryFiles, trade.id, "trade"]]) {
+      for (const file of files) tx.objectStore("images").add({ id: newId("I"), recordId, kind, file, name: file.name, mime: file.type, addedAt: new Date().toISOString() });
+    }
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error("保存が中断されました"));
+  });
+}
+
 function formValue(form, name) { return form.elements.namedItem(name)?.value?.trim() || ""; }
 function formChecked(form, name) { return !!form.elements.namedItem(name)?.checked; }
 function numericOrNull(value) { return value === "" ? null : Number(value); }
@@ -84,6 +99,27 @@ async function renderImages(kind, recordId = "") {
   if (!saved.length && !state.pending[kind].length) { const note = document.createElement("span"); note.className = "micro"; note.textContent = "画像はまだありません"; holder.append(note); }
 }
 
+async function renderLinkedCandidateImages(candidateId = "") {
+  const panel = $("#linkedCandidatePanel");
+  const holder = $("#linkedCandidateImages");
+  panel.hidden = !candidateId;
+  holder.replaceChildren();
+  if (!candidateId) return;
+  const images = (await getAll("images")).filter(item => item.recordId === candidateId && item.kind === "candidate");
+  for (const image of images) holder.append(previewButton(image.file, false));
+  if (!images.length) { const note = document.createElement("span"); note.className = "micro"; note.textContent = "候補画像はありません"; holder.append(note); }
+}
+
+function syncCandidateTradeFields() {
+  const form = $("#candidateForm");
+  const enabled = formChecked(form, "recordTrade");
+  $("#candidateTradeFields").hidden = !enabled;
+  form.elements.namedItem("candidateEntryTime").required = enabled;
+  $("#candidateSave").textContent = enabled ? "候補とトレードを保存" : "候補を保存";
+  if (enabled && !formValue(form, "candidateEntryTime")) form.elements.namedItem("candidateEntryTime").value = jstNow();
+  if (enabled && !formValue(form, "candidateEntryComment")) form.elements.namedItem("candidateEntryComment").value = formValue(form, "decisionComment");
+}
+
 function resetForm(kind) {
   const form = $(`#${kind}Form`);
   form.reset(); form.elements.namedItem("id").value = "";
@@ -92,6 +128,14 @@ function resetForm(kind) {
   state.pending[kind] = [];
   renderImages(kind);
   if (kind === "trade") { state.pending.exit = []; renderImages("exit"); }
+  if (kind === "candidate") {
+    state.pending.candidateTrade = [];
+    renderImages("candidateTrade");
+    form.elements.namedItem("candidateSl").disabled = false;
+    form.elements.namedItem("recordTrade").disabled = false;
+    $("#linkedTradeNotice").hidden = true;
+    syncCandidateTradeFields();
+  } else renderLinkedCandidateImages();
   setStatus(kind === "candidate" ? "#candidateStatus" : "#tradeStatus", "");
 }
 
@@ -112,7 +156,7 @@ async function refresh() {
 
 function renderList(candidates, trades, images) {
   const rows = state.listType === "candidates" ? candidates : trades;
-  renderListRows(rows, images, $("#recordList"), state.listType);
+  renderListRows(rows, images, $("#recordList"), state.listType, trades);
 }
 
 function isOpenTrade(row) { return !row.exitTime && row.exitPrice == null && row.pnlYen == null; }
@@ -123,7 +167,7 @@ function renderHoldings(trades, images) {
   renderListRows(rows, images, $("#holdingList"), "trades");
 }
 
-function renderListRows(rows, images, holder, type) {
+function renderListRows(rows, images, holder, type, trades = []) {
   revokeListImages();
   holder.replaceChildren();
   if (!rows.length) { holder.innerHTML = `<div class="empty">${type === "trades" && holder.id === "holdingList" ? "保有中のトレードはありません" : "まだ記録がありません"}</div>`; return; }
@@ -138,7 +182,8 @@ function renderListRows(rows, images, holder, type) {
     const when = type === "candidates" ? row.candidateTime : row.entryTime;
     const detail = type === "candidates" ? `${row.origin} · ${row.judgment}` : `${row.accountType} · ${row.compliance || "遵守保留"}`;
     const recordImages = imagesByRecord.get(row.id) || [];
-    const firstImage = (type === "trades" && recordImages.find(image => image.kind === "trade")) || recordImages[0];
+    const linkedCandidateImages = type === "trades" && row.candidateId ? (imagesByRecord.get(row.candidateId) || []).filter(image => image.kind === "candidate") : [];
+    const firstImage = (type === "trades" && recordImages.find(image => image.kind === "trade")) || linkedCandidateImages[0] || recordImages[0];
     if (firstImage) {
       const thumbnail = document.createElement("img");
       thumbnail.className = "record-thumb";
@@ -148,8 +193,10 @@ function renderListRows(rows, images, holder, type) {
     } else {
       const thumbnail = document.createElement("div"); thumbnail.className = "record-thumb no-img"; thumbnail.textContent = "📊"; card.append(thumbnail);
     }
-    const imageSummary = type === "trades" ? `エントリー画像 ${recordImages.filter(image => image.kind === "trade").length}枚 · 決済画像 ${recordImages.filter(image => image.kind === "exit").length}枚` : `画像 ${recordImages.length}枚`;
-    card.insertAdjacentHTML("beforeend", `<div class="record-info"><h3>${escapeHtml(row.pair)} <span class="${row.direction === "買い" ? "buy" : "sell"}">${escapeHtml(row.direction)}</span></h3><p>${escapeHtml(when?.replace("T", " "))} JST · ${escapeHtml(detail)}</p><small>${escapeHtml(imageSummary)} · ${escapeHtml(row.id)}</small></div><button type="button" class="quiet" data-edit="${escapeHtml(row.id)}" data-type="${type}">開く</button>`);
+    const imageSummary = type === "trades" ? `候補画像 ${linkedCandidateImages.length}枚 · エントリー追加画像 ${recordImages.filter(image => image.kind === "trade").length}枚 · 決済画像 ${recordImages.filter(image => image.kind === "exit").length}枚` : `画像 ${recordImages.length}枚`;
+    const linkedTrade = type === "candidates" ? trades.find(trade => trade.candidateId === row.id) : null;
+    const candidateAction = type === "candidates" ? (linkedTrade ? `<button type="button" class="quiet" data-open-trade="${escapeHtml(linkedTrade.id)}">トレードを見る</button>` : `<button type="button" class="quiet" data-start-entry="${escapeHtml(row.id)}" aria-label="この候補からエントリーを記録">エントリー</button>`) : "";
+    card.insertAdjacentHTML("beforeend", `<div class="record-info"><h3>${escapeHtml(row.pair)} <span class="${row.direction === "買い" ? "buy" : "sell"}">${escapeHtml(row.direction)}</span></h3><p>${escapeHtml(when?.replace("T", " "))} JST · ${escapeHtml(detail)}</p><small>${escapeHtml(imageSummary)} · ${escapeHtml(row.id)}</small></div><div class="record-actions"><button type="button" class="quiet" data-edit="${escapeHtml(row.id)}" data-type="${type}">開く</button>${candidateAction}</div>`);
     holder.append(card);
   }
 }
@@ -169,11 +216,23 @@ async function editRecord(type, id) {
   const record = await getOne(type, id);
   if (!record) return;
   showView(type);
+  $(`#${kind}Form`).reset();
   state.pending[kind] = [];
   if (kind === "trade") state.pending.exit = [];
+  else state.pending.candidateTrade = [];
   fillForm($(`#${kind}Form`), record);
   await renderImages(kind, id);
-  if (kind === "trade") await renderImages("exit", id);
+  if (kind === "trade") {
+    await renderImages("exit", id);
+    await renderLinkedCandidateImages(record.candidateId);
+  } else {
+    await renderImages("candidateTrade");
+    const linked = (await getAll("trades")).find(trade => trade.candidateId === id);
+    $("#candidateForm").elements.namedItem("recordTrade").disabled = !!linked;
+    $("#linkedTradeNotice").hidden = !linked;
+    $("#candidateForm").elements.namedItem("candidateSl").disabled = false;
+    syncCandidateTradeFields();
+  }
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
@@ -181,6 +240,9 @@ async function saveCandidate(event) {
   event.preventDefault();
   const form = event.currentTarget;
   if (!form.reportValidity()) { setStatus("#candidateStatus", "必須項目を入力してください。", true); return; }
+  const submit = $("#candidateSave");
+  if (submit.disabled) return;
+  submit.disabled = true;
   setStatus("#candidateStatus", "保存中…");
   try {
     const id = formValue(form, "id") || newId("C");
@@ -188,9 +250,23 @@ async function saveCandidate(event) {
     const now = new Date().toISOString();
     const candidate = { id, ruleVersion: previous?.ruleVersion || RULE_VERSION, screenerVersion: previous?.screenerVersion || SCREENER_VERSION, candidateTime: formValue(form, "candidateTime"), pair: formValue(form, "pair"), direction: formValue(form, "direction"), origin: formValue(form, "origin"), reasons: [...form.querySelectorAll('input[name="reasons"]:checked')].map(el => el.value), d1View: formValue(form, "d1View"), h4View: formValue(form, "h4View"), h1View: formValue(form, "h1View"), h4Role: formValue(form, "h4Role"), setup: formValue(form, "setup"), decisionTf: formValue(form, "decisionTf"), trigger: formValue(form, "trigger"), judgment: formValue(form, "judgment"), decisionComment: formValue(form, "decisionComment"), createdAt: previous?.createdAt || now, updatedAt: now };
     const imageCount = state.pending.candidate.length;
-    await saveRecord("candidates", candidate, state.pending.candidate.map(file => ({ file, kind: "candidate" }))); resetForm("candidate"); await refresh(); setStatus("#candidateStatus", `保存しました: ${id}（画像${imageCount}枚）`);
+    if (formChecked(form, "recordTrade")) {
+      const existing = (await getAll("trades")).find(trade => trade.candidateId === id);
+      if (existing) throw new Error("この候補のトレードは記録済みです。履歴から開いてください");
+      const noStop = formChecked(form, "candidateNoStop");
+      const sl = noStop ? null : numericOrNull(formValue(form, "candidateSl"));
+      const trade = { id: newId("T"), candidateId: id, ruleVersion: candidate.ruleVersion, screenerVersion: candidate.screenerVersion, accountType: formValue(form, "candidateAccountType"), pair: candidate.pair, direction: candidate.direction, entryTime: formValue(form, "candidateEntryTime"), entryPrice: null, sl, stopStatus: initialStopStatus(sl, noStop), tp: numericOrNull(formValue(form, "candidateTp")), trailingPlanned: formChecked(form, "candidateTrailingPlanned"), riskYen: null, compliance: "", entryComment: formValue(form, "candidateEntryComment"), exitTime: "", exitPrice: null, pnlYen: null, pnlR: null, exitReason: "", postReview: "", createdAt: now, updatedAt: now };
+      await saveCandidateAndTrade(candidate, trade, state.pending.candidate, state.pending.candidateTrade);
+      const entryImageCount = state.pending.candidateTrade.length;
+      resetForm("candidate"); await refresh();
+      setStatus("#candidateStatus", `候補とトレードを保存しました。候補画像${imageCount}枚はトレードからも確認できます。エントリー追加画像${entryImageCount}枚。`);
+    } else {
+      await saveRecord("candidates", candidate, state.pending.candidate.map(file => ({ file, kind: "candidate" })));
+      resetForm("candidate"); await refresh(); setStatus("#candidateStatus", `保存しました: ${id}（画像${imageCount}枚）`);
+    }
   }
   catch (error) { setStatus("#candidateStatus", `保存できませんでした: ${error.message}`, true); }
+  finally { submit.disabled = false; }
 }
 
 async function saveTrade(event) {
@@ -293,6 +369,15 @@ function wireEvents() {
   $("#tradeForm").addEventListener("submit", saveTrade);
   $("#newCandidate").addEventListener("click", () => resetForm("candidate"));
   $("#newTrade").addEventListener("click", () => resetForm("trade"));
+  $("#recordTradeWithCandidate").addEventListener("change", syncCandidateTradeFields);
+  $("#candidateForm").elements.namedItem("candidateNoStop").addEventListener("change", event => {
+    const sl = $("#candidateForm").elements.namedItem("candidateSl");
+    if (event.target.checked) sl.value = "";
+    sl.disabled = event.target.checked;
+  });
+  $("#candidateForm").elements.namedItem("candidateSl").addEventListener("input", event => {
+    if (event.target.value !== "") $("#candidateForm").elements.namedItem("candidateNoStop").checked = false;
+  });
   $$(".image-input").forEach(input => input.addEventListener("change", async () => {
     const kind = input.dataset.kind;
     let rejected = 0;
@@ -302,15 +387,21 @@ function wireEvents() {
     }
     input.value = "";
     try {
-      await renderImages(kind, kind === "candidate" ? $("#candidateForm").elements.namedItem("id").value : $("#tradeForm").elements.namedItem("id").value);
-      const label = kind === "exit" ? "決済画像" : kind === "trade" ? "エントリー画像" : "画像";
-      const message = `${label}${state.pending[kind].length}枚選択済み。下の「${kind === "candidate" ? "候補" : "トレード"}を保存」で画像も保存します。${rejected ? `対応外または25MB超の画像${rejected}枚は除外しました。` : ""}`;
-      setStatus(kind === "candidate" ? "#candidateStatus" : "#tradeStatus", message, !!rejected);
-    } catch (error) { setStatus(kind === "candidate" ? "#candidateStatus" : "#tradeStatus", `画像を表示できません: ${error.message}`, true); }
+      await renderImages(kind, kind === "candidate" ? $("#candidateForm").elements.namedItem("id").value : kind === "candidateTrade" ? "" : $("#tradeForm").elements.namedItem("id").value);
+      const label = kind === "exit" ? "決済画像" : kind === "trade" || kind === "candidateTrade" ? "エントリー画像" : "画像";
+      const saveLabel = kind === "candidateTrade" ? "候補とトレード" : kind === "candidate" ? "候補" : "トレード";
+      const message = `${label}${state.pending[kind].length}枚選択済み。下の「${saveLabel}を保存」で画像も保存します。${rejected ? `対応外または25MB超の画像${rejected}枚は除外しました。` : ""}`;
+      setStatus(kind === "candidate" || kind === "candidateTrade" ? "#candidateStatus" : "#tradeStatus", message, !!rejected);
+    } catch (error) { setStatus(kind === "candidate" || kind === "candidateTrade" ? "#candidateStatus" : "#tradeStatus", `画像を表示できません: ${error.message}`, true); }
   }));
   $("#candidateSelect").addEventListener("change", async event => {
     const candidate = event.target.value ? await getOne("candidates", event.target.value) : null;
-    if (candidate && !formValue($("#tradeForm"), "id")) { $("#tradeForm").elements.namedItem("pair").value = candidate.pair; $("#tradeForm").elements.namedItem("direction").value = candidate.direction; }
+    await renderLinkedCandidateImages(candidate?.id);
+    if (candidate && !formValue($("#tradeForm"), "id")) {
+      $("#tradeForm").elements.namedItem("pair").value = candidate.pair;
+      $("#tradeForm").elements.namedItem("direction").value = candidate.direction;
+      if (!formValue($("#tradeForm"), "entryComment")) $("#tradeForm").elements.namedItem("entryComment").value = candidate.decisionComment || "";
+    }
   });
   $("#tradeForm").elements.namedItem("noStop").addEventListener("change", event => {
     const sl = $("#tradeForm").elements.namedItem("sl");
@@ -320,7 +411,20 @@ function wireEvents() {
   $("#tradeForm").elements.namedItem("sl").addEventListener("input", event => {
     if (event.target.value !== "") $("#tradeForm").elements.namedItem("noStop").checked = false;
   });
-  $("#recordList").addEventListener("click", event => { const button = event.target.closest("[data-edit]"); if (button) editRecord(button.dataset.type, button.dataset.edit); });
+  $("#recordList").addEventListener("click", async event => {
+    const start = event.target.closest("[data-start-entry]");
+    if (start) {
+      await editRecord("candidates", start.dataset.startEntry);
+      $("#recordTradeWithCandidate").checked = true;
+      syncCandidateTradeFields();
+      $("#candidateTradeFields").scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
+    const linked = event.target.closest("[data-open-trade]");
+    if (linked) { await editRecord("trades", linked.dataset.openTrade); return; }
+    const button = event.target.closest("[data-edit]");
+    if (button) await editRecord(button.dataset.type, button.dataset.edit);
+  });
   $("#holdingList").addEventListener("click", event => { const button = event.target.closest("[data-edit]"); if (button) editRecord(button.dataset.type, button.dataset.edit); });
   $$(".segmented button").forEach(button => button.addEventListener("click", async () => { state.listType = button.dataset.list; $$(".segmented button").forEach(item => item.classList.toggle("selected", item === button)); const [c, t, i] = await Promise.all([getAll("candidates"), getAll("trades"), getAll("images")]); renderList(c, t, i); }));
   $("#exportBackup").addEventListener("click", exportBackup);
