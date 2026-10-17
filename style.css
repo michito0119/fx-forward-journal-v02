@@ -66,3 +66,15 @@ input:disabled{opacity:.55}
 .record-actions{display:flex;flex-direction:column;gap:6px;align-self:center;flex:none}
 .record-actions .quiet{width:100%}
 @media(max-width:650px){.record-actions .quiet{padding:8px 7px;font-size:11px}.candidate-entry-fields{padding:12px}}
+
+/* CSV照合・共有受信・画像レビューをスマートフォン幅へ収める */
+.review-filters{width:100%;flex-wrap:wrap;box-sizing:border-box}
+.review-filters button{flex:1;padding:10px 8px;white-space:nowrap}
+#reviewList .record-card,.received-card{flex-wrap:wrap}
+#reviewList .record-info{flex-basis:60%}
+.review-image-grid{flex-basis:100%;padding-left:0!important}
+.receive-actions{display:flex;flex-direction:column;gap:8px;width:100%;min-width:0}
+.receive-actions select{width:100%;min-width:0}
+#oandaPreview .record-card{overflow-wrap:anywhere}
+#oandaPreview .record-card p{white-space:normal}
+#tradeDatetimeInfo{overflow-wrap:anywhere}
