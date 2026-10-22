@@ -1,4 +1,5 @@
 const REQUIRED = ["チケット番号", "種別", "日時 (JST)", "銘柄", "売買", "数量", "約定価格"];
+const NON_TRADE_KINDS = new Set(["スワップ", "入金", "出金"]);
 
 export function parseCsv(text) {
   const rows = [];
@@ -55,6 +56,7 @@ export function normalizeOandaCsv(text) {
     const at = String(raw["日時 (JST)"] || "").trim();
     const match = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/.exec(at);
     const kind = String(raw["種別"] || "").trim();
+    const nonTrade = NON_TRADE_KINDS.has(kind);
     const pair = String(raw["銘柄"] || "").trim().toUpperCase();
     const side = direction(raw["売買"]);
     const quantity = number(raw["数量"]);
@@ -64,8 +66,8 @@ export function normalizeOandaCsv(text) {
     const validDate = !!localCheck && localCheck.getUTCFullYear() === Number(match[1]) && localCheck.getUTCMonth() + 1 === Number(match[2]) && localCheck.getUTCDate() === Number(match[3]) && localCheck.getUTCHours() === Number(match[4]) && localCheck.getUTCMinutes() === Number(match[5]) && localCheck.getUTCSeconds() === Number(match[6]);
     const errors = [];
     if (!validDate) errors.push("日時を読めません");
-    if (!["新規取引", "決済取引"].includes(kind)) errors.push(`対象外の明細種別: ${kind || "空欄"}`);
-    if (!pair || !side || quantity == null || quantity <= 0 || price == null || price <= 0) errors.push("ペア・売買・数量・価格のいずれかが不正です");
+    if (!nonTrade && !["新規取引", "決済取引"].includes(kind)) errors.push(`未対応の明細種別: ${kind || "空欄"}`);
+    if (!nonTrade && (!pair || !side || quantity == null || quantity <= 0 || price == null || price <= 0)) errors.push("ペア・売買・数量・価格のいずれかが不正です");
     const entryTime = validDate ? `${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}` : "";
     const ticketId = String(raw["チケット番号"] || "").trim();
     const fingerprint = JSON.stringify([raw, occurrence]);
@@ -95,16 +97,19 @@ export function normalizeOandaCsv(text) {
 export function bundleOandaRows(rows) {
   const groups = new Map();
   for (const row of rows) {
-    if (!groups.has(row.ticketId)) groups.set(row.ticketId, []);
-    groups.get(row.ticketId).push(row);
+    const key = NON_TRADE_KINDS.has(row.kind) ? `nontrade:${row.id}` : `trade:${row.ticketId}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(row);
   }
-  return [...groups.entries()].map(([ticketId, items]) => {
+  return [...groups.values()].map(items => {
+    const ticketId = items[0].ticketId;
     const entries = items.filter(row => row.kind === "新規取引");
     const exits = items.filter(row => row.kind === "決済取引");
     const invalid = items.some(row => row.errors.length);
     const duplicateEvents = items.length !== new Set(items.map(row => row.duplicateKey || row.id)).size;
     let status = "対応保留";
-    if (!ticketId || invalid) status = "入力不正";
+    if (items.every(row => NON_TRADE_KINDS.has(row.kind))) status = "取引対象外（スワップ・入出金）";
+    else if (!ticketId || invalid) status = "入力不正";
     else if (duplicateEvents) status = "同一明細の重複候補";
     else if (entries.length === 1 && exits.length === 0) status = "新規のみ";
     else if (entries.length === 1 && exits.length === 1 && (entries[0].pair !== exits[0].pair || entries[0].direction !== exits[0].direction)) status = "新規決済のペア・方向不一致";
@@ -121,6 +126,7 @@ export function planOandaImport(bundles, trades, accountType, accountId, pairs) 
   const sameAccount = trade => trade.accountType === accountType && trade.accountId === accountId;
   const proposals = bundles.map(bundle => {
     const hold = note => ({ ...bundle, action: "保留", note });
+    if (bundle.status === "取引対象外（スワップ・入出金）") return { ...bundle, action: "対象外", note: "原明細を保存します。取引の照合・勝敗判定には使用しません" };
     if (!["新規のみ", "新規＋全決済"].includes(bundle.status)) return hold(bundle.status);
     const entry = bundle.entry;
     if (!entry || !pairs.includes(entry.pair)) return hold("アプリ対象外のペアまたは新規明細なし");

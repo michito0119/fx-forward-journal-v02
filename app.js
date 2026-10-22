@@ -300,8 +300,10 @@ async function previewOandaFile(file) {
     state.oandaPreview = { rows: incoming, proposals, accountType, accountId,
       tradesSnapshot: dataSnapshot(trades), rowsSnapshot: dataSnapshot(saved),
       source: { id: sourceId, sha256: digest, name: file.name, file, encoding, accountType, accountId, importedAt: now } };
-    const safeCount = proposals.filter(row => row.action !== "保留").length;
-    $("#oandaPreview").innerHTML = `<p class="micro">${escapeHtml(file.name)} · ${escapeHtml(accountId)} · CSV明細 ${incoming.length}行 · 一括反映対象 ${safeCount}件 · 保留 ${proposals.length - safeCount}件</p>` + proposals.map(row => `<article class="record-card"><div><strong>${escapeHtml(row.action)} · ${escapeHtml(row.status)}</strong><p>${escapeHtml(row.entry?.pair || "ペア未確認")} ${escapeHtml(row.entry?.direction || "")} · チケット ${escapeHtml(row.ticketId || "不明")}</p><small>${escapeHtml(row.note)}</small></div></article>`).join("");
+    const safeCount = proposals.filter(row => ["新規追加", "照合", "更新"].includes(row.action)).length;
+    const heldCount = proposals.filter(row => row.action === "保留").length;
+    const excludedCount = proposals.filter(row => row.action === "対象外").length;
+    $("#oandaPreview").innerHTML = `<p class="micro">${escapeHtml(file.name)} · ${escapeHtml(accountId)} · CSV明細 ${incoming.length}行 · 一括反映対象 ${safeCount}件 · 保留 ${heldCount}件 · スワップ・入出金等の対象外 ${excludedCount}件</p>` + proposals.map(row => `<article class="record-card"><div><strong>${escapeHtml(row.action)} · ${escapeHtml(row.status)}</strong><p>${escapeHtml(row.action === "対象外" ? row.items[0].kind : row.entry?.pair || "ペア未確認")} ${escapeHtml(row.entry?.direction || "")} · チケット ${escapeHtml(row.ticketId || "不明")}</p><small>${escapeHtml(row.note)}</small></div></article>`).join("");
     $("#applyOandaCsv").disabled = false;
     setStatus("#oandaStatus", "全件を確認し、一括反映してください。保留明細と元CSVも端末内へ保存します。");
   } catch (error) {
@@ -373,6 +375,7 @@ async function applyOandaImport() {
           const known = new Set(rows.map(row => row.id));
           for (const row of preview.rows) if (!known.has(row.id)) { tx.objectStore("oandaRows").add(row); known.add(row.id); incoming++; }
           for (const proposal of preview.proposals) {
+            if (proposal.action === "対象外") continue;
             if (proposal.action === "保留") {
               for (const trade of trades.filter(row => row.accountType === preview.accountType && row.accountId === preview.accountId && row.oandaTicketId === proposal.ticketId))
                 tx.objectStore("trades").put({ ...trade, reconciliationStatus: "held", reconciliationNote: proposal.note });
@@ -391,7 +394,9 @@ async function applyOandaImport() {
     });
     state.oandaPreview = null;
     await refresh();
-    setStatus("#oandaStatus", `反映しました: トレード${result.updated}件・新規明細${result.incoming}行。保留${preview.proposals.length - result.updated}件。元CSVも画像込みバックアップの対象です。`);
+    const heldCount = preview.proposals.filter(row => row.action === "保留").length;
+    const excludedCount = preview.proposals.filter(row => row.action === "対象外").length;
+    setStatus("#oandaStatus", `反映しました: トレード${result.updated}件・新規明細${result.incoming}行。保留${heldCount}件・取引対象外${excludedCount}件。元CSVも画像込みバックアップの対象です。`);
   } catch (error) {
     state.oandaPreview = null;
     setStatus("#oandaStatus", `反映できませんでした: ${error.message}`, true);

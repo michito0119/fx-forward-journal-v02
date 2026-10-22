@@ -1,7 +1,7 @@
-const CACHE = "mk-forward-v02-20261015-2";
+const CACHE = "mk-forward-v02-20261023-1";
 const DB_NAME = "mk-forward-journal-v02";
 const DB_VERSION = 4;
-const ASSETS = ["./", "./index.html", "./style.css?v=20261015-2", "./app.js?v=20261015-2", "./utils.mjs", "./oanda.mjs", "./manifest.webmanifest", "./icon.svg", "./icon-192.png", "./icon-512.png"];
+const ASSETS = ["./", "./index.html", "./style.css?v=20261023-1", "./app.js?v=20261023-1", "./utils.mjs", "./oanda.mjs", "./manifest.webmanifest", "./icon.svg", "./icon-192.png", "./icon-512.png"];
 self.addEventListener("install", event => { event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(ASSETS))); self.skipWaiting(); });
 self.addEventListener("activate", event => { event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(key => key.startsWith("mk-forward-v02-") && key !== CACHE).map(key => caches.delete(key))))); self.clients.claim(); });
 self.addEventListener("fetch", event => {
