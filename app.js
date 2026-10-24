@@ -7,6 +7,7 @@ const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
 let savedReviewFilter = "all";
 try { savedReviewFilter = localStorage.getItem("mk-forward-review-filter") || "all"; } catch {}
 const state = { listType: "candidates", reviewFilter: ["all", "win", "loss", "flat", "open", "unmatched"].includes(savedReviewFilter) ? savedReviewFilter : "all", pending: { candidate: [], candidateTrade: [], trade: [], exit: [] }, oandaPreview: null, previewUrls: [], listUrls: [] };
+state.sharedDraft = [];
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 
@@ -50,11 +51,21 @@ async function getOne(storeName, id) {
 async function saveRecord(storeName, record, attachments) {
   const db = await dbReady;
   return new Promise((resolve, reject) => {
-    const tx = db.transaction([storeName, "images"], "readwrite");
+    const tx = db.transaction([storeName, "images", "shareInbox"], "readwrite");
+    // Serialize receipt consumption with record/image writes. Abort preserves the inbox.
+    for (const receipt of storeName === "trades" ? state.sharedDraft : []) {
+      const request = tx.objectStore("shareInbox").get(receipt.id);
+      request.onsuccess = () => {
+        const image = request.result;
+        if (!image) { tx.abort(); return; }
+        tx.objectStore("images").add({ ...image, id: image.id, receiptId: image.id, recordId: record.id, kind: "trade", addedAt: image.receivedAt });
+        tx.objectStore("shareInbox").delete(image.id);
+      };
+    }
     tx.objectStore(storeName).put(record);
     for (const { file, kind } of attachments) tx.objectStore("images").add({ id: newId("I"), recordId: record.id, kind, file, name: file.name, mime: file.type, addedAt: new Date().toISOString() });
     tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+    tx.onerror = () => reject(tx.error || new Error("保存処理が中断されました。画像の割当状況を確認してください"));
     tx.onabort = () => reject(tx.error || new Error("保存が中断されました"));
   });
 }
@@ -69,7 +80,7 @@ async function saveCandidateAndTrade(candidate, trade, candidateFiles, entryFile
       for (const file of files) tx.objectStore("images").add({ id: newId("I"), recordId, kind, file, name: file.name, mime: file.type, addedAt: new Date().toISOString() });
     }
     tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+    tx.onerror = () => reject(tx.error || new Error("保存処理が中断されました。画像の割当状況を確認してください"));
     tx.onabort = () => reject(tx.error || new Error("保存が中断されました"));
   });
 }
@@ -118,8 +129,9 @@ async function renderImages(kind, recordId = "") {
   clearImageHolder(holder);
   const saved = recordId ? (await getAll("images")).filter(item => item.recordId === recordId && item.kind === kind) : [];
   for (const image of saved) holder.append(previewButton(image.file, false));
+  if (kind === "trade") for (const image of state.sharedDraft) holder.append(previewButton(image.file, false));
   for (const file of state.pending[kind]) holder.append(previewButton(file, true));
-  if (!saved.length && !state.pending[kind].length) { const note = document.createElement("span"); note.className = "micro"; note.textContent = "画像はまだありません"; holder.append(note); }
+  if (!saved.length && !state.pending[kind].length && !(kind === "trade" && state.sharedDraft.length)) { const note = document.createElement("span"); note.className = "micro"; note.textContent = "画像はまだありません"; holder.append(note); }
 }
 
 async function renderLinkedCandidateImages(candidateId = "") {
@@ -146,12 +158,15 @@ function syncCandidateTradeFields() {
 function resetForm(kind) {
   const form = $(`#${kind}Form`);
   form.reset(); form.elements.namedItem("id").value = "";
-  for (const field of form.querySelectorAll('input[type="datetime-local"]')) delete field.dataset.edited;
+  for (const field of form.querySelectorAll('input[type="datetime-local"]')) { delete field.dataset.edited; delete field.dataset.hint; }
   form.elements.namedItem(kind === "candidate" ? "candidateTime" : "entryTime").value = jstNow();
   if (kind === "trade") {
+    state.sharedDraft = [];
+    $("#sharedDraftInfo").hidden = true;
+    $("#tradeDetails").open = false;
     form.elements.namedItem("sl").disabled = false;
-    for (const name of ["accountType", "accountId", "pair", "direction"]) form.elements.namedItem(name).disabled = false;
-    $("#tradeDatetimeInfo").textContent = "日時は保存時の登録日時を仮入力します。実際の日時は後から修正できます。";
+    for (const name of ["accountType", "accountId", "pair", "direction", "recordMode"]) form.elements.namedItem(name).disabled = false;
+    $("#tradeDatetimeInfo").textContent = "表示したJSTは目安です（修正可）。登録日時・画像受信日時・CSVの実約定日時は別に保持します。";
   }
   state.pending[kind] = [];
   renderImages(kind);
@@ -223,8 +238,19 @@ function renderReceivedImages(received, candidates, trades) {
       try { await assignReceivedImage(image.id, target.value, kind.value); await refresh(); }
       catch (error) { setStatus("#receiveStatus", `割当できませんでした: ${error.message}`, true); assign.disabled = false; }
     });
-    actions.append(target, kind, assign); card.append(info, actions); holder.append(card);
+    const create = document.createElement("button"); create.type = "button"; create.className = "quiet"; create.textContent = "この画像で新規エントリー";
+    create.addEventListener("click", () => startSharedEntry([image]));
+    actions.append(create, target, kind, assign); card.append(info, actions); holder.append(card);
   }
+}
+
+async function startSharedEntry(images) {
+  resetForm("trade");
+  state.sharedDraft = images;
+  $("#sharedDraftInfo").hidden = false;
+  $("#sharedDraftInfo").textContent = `共有画像${images.length}枚は受信箱に保存済み。保存を中断しても受信画像から再開できます。既存取引への追加は「受信画像」へ。`;
+  showView("trades");
+  await renderImages("trade");
 }
 
 async function assignReceivedImage(imageId, targetValue, kind) {
@@ -246,17 +272,18 @@ async function assignReceivedImage(imageId, targetValue, kind) {
         if (!record || !received) { failure = new Error("画像は割当済みか、割当先が見つかりません"); tx.abort(); return; }
         tx.objectStore("images").add({ id: imageId, receiptId: imageId, recordId, kind, file: received.file, name: received.name, mime: received.mime, addedAt: received.receivedAt, receivedAt: received.receivedAt });
         tx.objectStore("shareInbox").delete(imageId);
-        if (kind === "exit" && !record.exitTime) {
-          record.exitTime = jstInputFromIso(received.receivedAt);
-          record.exitTimeSource = "registration";
-          record.exitTimeHistory = record.exitTimeHistory || [];
+        if (kind === "exit" && !record.exitTimeHint && !record.exitTime && !record.exitTimeOanda) {
+          record.exitTimeHint = jstNow();
+          record.exitTimeHintSource = "image_attachment";
+          record.exitTimeHintHistory = record.exitTimeHintHistory || [];
           record.updatedAt = new Date().toISOString();
           tx.objectStore(storeName).put(record);
         }
+
       };
     };
     tx.oncomplete = resolve;
-    tx.onerror = () => reject(tx.error);
+    tx.onerror = () => reject(tx.error || new Error("保存処理が中断されました。画像の割当状況を確認してください"));
     tx.onabort = () => reject(failure || tx.error || new Error("割当処理が中断されました"));
   });
 }
@@ -265,7 +292,7 @@ let csvPreviewVersion = 0;
 function clearOandaPreview() {
   csvPreviewVersion++;
   state.oandaPreview = null;
-  $("#oandaPreview").replaceChildren();
+  clearImageHolder($("#oandaPreview"));
   $("#applyOandaCsv").disabled = true;
 }
 function dataSnapshot(rows) {
@@ -293,23 +320,72 @@ async function previewOandaFile(file) {
     const byId = new Map(saved.map(row => [row.id, row]));
     const rows = [...saved, ...incoming.filter(row => !byId.has(row.id))];
     const affected = new Set(incoming.map(row => row.ticketId));
-    const bundles = bundleOandaRows(rows.filter(row => row.accountType === accountType && row.accountId === accountId && affected.has(row.ticketId)));
+    const competitionBundles = bundleOandaRows(rows.filter(row => row.accountType === accountType && row.accountId === accountId));
+    const bundles = competitionBundles.filter(bundle => affected.has(bundle.ticketId));
     const trades = await getAll("trades");
-    const proposals = planOandaImport(bundles, trades, accountType, accountId, PAIRS);
+    const proposals = planOandaImport(bundles, trades, accountType, accountId, PAIRS, { allowUnassignedAccount: $("#confirmCsvAccount").checked, competitionBundles });
     if (version !== csvPreviewVersion) return;
-    state.oandaPreview = { rows: incoming, proposals, accountType, accountId,
+    state.oandaPreview = { rows: incoming, proposals, bundles, competitionBundles, trades, choices: {}, allowUnassignedAccount: $("#confirmCsvAccount").checked, accountType, accountId,
       tradesSnapshot: dataSnapshot(trades), rowsSnapshot: dataSnapshot(saved),
       source: { id: sourceId, sha256: digest, name: file.name, file, encoding, accountType, accountId, importedAt: now } };
-    const safeCount = proposals.filter(row => ["新規追加", "照合", "更新"].includes(row.action)).length;
-    const heldCount = proposals.filter(row => row.action === "保留").length;
-    const excludedCount = proposals.filter(row => row.action === "対象外").length;
-    $("#oandaPreview").innerHTML = `<p class="micro">${escapeHtml(file.name)} · ${escapeHtml(accountId)} · CSV明細 ${incoming.length}行 · 一括反映対象 ${safeCount}件 · 保留 ${heldCount}件 · スワップ・入出金等の対象外 ${excludedCount}件</p>` + proposals.map(row => `<article class="record-card"><div><strong>${escapeHtml(row.action)} · ${escapeHtml(row.status)}</strong><p>${escapeHtml(row.action === "対象外" ? row.items[0].kind : row.entry?.pair || "ペア未確認")} ${escapeHtml(row.entry?.direction || "")} · チケット ${escapeHtml(row.ticketId || "不明")}</p><small>${escapeHtml(row.note)}</small></div></article>`).join("");
+    state.oandaPreview.images = await getAll("images");
+    if (version !== csvPreviewVersion) return;
+    renderOandaPreview();
     $("#applyOandaCsv").disabled = false;
-    setStatus("#oandaStatus", "全件を確認し、一括反映してください。保留明細と元CSVも端末内へ保存します。");
+    setStatus("#oandaStatus", "自動候補と要確認の行を確認して一括反映してください。保留のままでも元CSVは保存できます。");
   } catch (error) {
     if (version !== csvPreviewVersion) return;
     clearOandaPreview();
     setStatus("#oandaStatus", `CSVを読み込めません: ${error.message}`, true);
+  }
+}
+
+function renderOandaPreview() {
+  const p = state.oandaPreview;
+  if (!p) return;
+  clearImageHolder($("#oandaPreview"));
+  const count = p.proposals.filter(row => ["新規追加", "照合", "更新"].includes(row.action)).length;
+  const summary = document.createElement("p"); summary.className = "micro";
+  summary.textContent = `${p.source.name} · ${p.accountId} · 一括反映 ${count}件 · 保留 ${p.proposals.filter(row=>row.action === "保留").length}件`;
+  $("#oandaPreview").append(summary);
+  for (const row of p.proposals) {
+    const card = document.createElement("article"); card.className = "record-card csv-match-card";
+    const text = document.createElement("div");
+    text.innerHTML = `<strong>${escapeHtml(row.action)} · ${escapeHtml(row.status)}</strong><p>${escapeHtml(row.entry?.pair || row.items[0]?.kind || "")} ${escapeHtml(row.entry?.direction || "")} · ${escapeHtml(row.entry?.entryTime || "")} JST · チケット ${escapeHtml(row.ticketId)}</p><small>${escapeHtml(row.note)}</small>`;
+    card.append(text);
+    const candidates = (row.candidateTradeIds || []).map(id => p.trades.find(trade=>trade.id===id)).filter(Boolean);
+    if (candidates.length) {
+      const select = document.createElement("select"); select.setAttribute("aria-label", `チケット${row.ticketId}の対応記録`);
+      select.add(new Option("自動判定／保留に戻す", ""));
+      for (const t of candidates) select.add(new Option(`${t.entryTimeHint || t.entryTime || "日時未記録"} · ${t.pair || "ペア未指定"} ${t.direction} · ${t.entryComment || "理由未記録"} · ${t.id}`, t.id));
+      select.add(new Option("対応する記録なし：新規追加を確認", "__new__"));
+      select.value = p.choices[row.ticketId] || "";
+      select.addEventListener("change", () => {
+        p.choices[row.ticketId] = select.value;
+        p.proposals = planOandaImport(p.bundles, p.trades, p.accountType, p.accountId, PAIRS, p);
+        renderOandaPreview();
+      });
+      card.append(select);
+      const details = document.createElement("details"); const title = document.createElement("summary"); title.textContent = `候補の画像・理由を見る（${candidates.length}件）`; details.append(title);
+      let loaded = false;
+      details.addEventListener("toggle", () => {
+        if (!details.open || loaded) return;
+        loaded = true;
+      for (const t of candidates) {
+        const item = document.createElement("div"); item.className = "csv-memo-candidate";
+        const hint = t.entryTimeHint || t.entryTime;
+        const delta = hint && row.entry ? (Date.parse(`${hint}${hint.length===16 ? ":00" : ""}+09:00`) - Date.parse(row.entry.datetimeIso)) / 60000 : NaN;
+        const label = document.createElement("p"); label.textContent = `${hint || "日時未記録"} JST · ${t.pair || "ペア未指定"} ${t.direction} · 目安−約定 ${Number.isFinite(delta) ? Math.round(delta) + "分" : "算定不能"} · ${t.entryComment || "理由未記録"} · ${t.id}`;
+        item.append(label);
+        const images = document.createElement("div"); images.className = "image-grid"; item.append(images);
+        for (const image of p.images || []) if ((image.recordId === t.id && image.kind === "trade") || (image.recordId === t.candidateId && image.kind === "candidate")) images.append(previewButton(image.file,false));
+        if (!images.children.length) images.textContent = "エントリー画像未記録";
+        details.append(item);
+      }
+      });
+      card.append(details);
+    }
+    $("#oandaPreview").append(card);
   }
 }
 
@@ -319,7 +395,7 @@ function applyOandaBundle(previous, bundle, accountType, accountId) {
   const now = new Date().toISOString();
   const trade = previous ? structuredClone(previous) : { id: newId("T"), candidateId: "", ruleVersion: "未確認（CSV由来）", screenerVersion: SCREENER_VERSION, recordOrigin: "oanda", forwardEligible: false, accountType, accountId, pair: entry.pair, direction: entry.direction, entryTime: entry.entryTime, entryTimeSource: "oanda", entryTimeHistory: [], entryPrice: entry.price, sl: null, stopStatus: "未記録", tp: null, trailingPlanned: false, riskYen: null, compliance: "", entryComment: "", exitTime: "", exitPrice: null, pnlYen: null, pnlR: null, exitReason: "", postReview: "", registeredAt: now, createdAt: now };
   const entryHistory = [...(trade.entryTimeHistory || [])];
-  const userEntryTime = trade.entryTimeSource === "manual" ? trade.entryTime : (trade.entryTimeUser || "");
+  const userEntryTime = ["manual", "hint"].includes(trade.entryTimeSource) ? (trade.entryTimeHint || trade.entryTime) : (trade.entryTimeUser || "");
   if (trade.entryTime && trade.entryTime !== entry.entryTime) entryHistory.push({ changedAt: now, from: trade.entryTime, to: entry.entryTime, source: "oanda" });
   trade.entryTimeOriginal ??= trade.entryTime;
   trade.entryTimeUser = userEntryTime;
@@ -327,6 +403,12 @@ function applyOandaBundle(previous, bundle, accountType, accountId) {
   trade.entryTimeSource = "oanda";
   trade.entryTimeOanda = entry.datetimeIso;
   trade.entryPrice = entry.price;
+  if (!previous?.oandaTicketId) {
+    trade.reconciliationHistory = [...(trade.reconciliationHistory || []), { linkedAt: now, policy: "near-30m-unique-2h-v1", method: bundle.matchMethod || "legacy", accountConfirmedBy: bundle.accountConfirmedBy || null, ticketId: bundle.ticketId, accountType, accountId, pair: entry.pair, hint: previous?.entryTimeHint || previous?.entryTime || null, inputPair: previous?.pair ?? null, inputAccountType: previous?.accountType ?? null, inputAccountId: previous?.accountId ?? null, eventIds: bundle.items.map(row=>row.id) }];
+  }
+  trade.accountType = accountType;
+  trade.pair = entry.pair;
+  trade.direction = entry.direction;
   trade.accountId = accountId;
   trade.quantity = entry.quantity;
   trade.reconciliationStatus = exit ? "closed" : "open";
@@ -389,7 +471,7 @@ async function applyOandaImport() {
         } catch (error) { failure = error; tx.abort(); }
       };
       tx.oncomplete = () => resolve({ updated, incoming });
-      tx.onerror = () => reject(tx.error);
+      tx.onerror = () => reject(tx.error || new Error("保存処理が中断されました。画像の割当状況を確認してください"));
       tx.onabort = () => reject(failure || tx.error || new Error("CSV反映が中断されました"));
     });
     state.oandaPreview = null;
@@ -428,7 +510,7 @@ function renderListRows(rows, images, holder, type, trades = []) {
   for (const row of rows) {
     const card = document.createElement("article"); card.className = "record-card";
     const when = type === "candidates" ? row.candidateTime : row.entryTime;
-    const detail = type === "candidates" ? `${row.origin} · ${row.judgment}` : `${row.accountType} / ${row.accountId || "口座未設定"} · ${row.recordOrigin === "oanda" ? "CSV由来・検証対象外" : row.compliance || "遵守保留"}`;
+    const detail = type === "candidates" ? `${row.origin} · ${row.judgment}` : `${row.accountType} / ${row.accountId || "口座未設定"} · ${row.recordOrigin === "oanda" ? "CSV由来・検証対象外" : row.recordMode === "journal" ? "通常記録・検証対象外" : row.compliance || "遵守保留"}`;
     const recordImages = imagesByRecord.get(row.id) || [];
     const linkedCandidateImages = type === "trades" && row.candidateId ? (imagesByRecord.get(row.candidateId) || []).filter(image => image.kind === "candidate") : [];
     const firstImage = (type === "trades" && recordImages.find(image => image.kind === "trade")) || linkedCandidateImages[0] || recordImages[0];
@@ -445,7 +527,7 @@ function renderListRows(rows, images, holder, type, trades = []) {
     const outcome = type === "trades" && isConfirmedClosed(row) ? `売買損益 ${Number(row.pnlYen).toLocaleString()}円 · ${row.pips == null ? "pips未算定" : `${row.pips}pips`}` : "勝敗未判定";
     const linkedTrade = type === "candidates" ? trades.find(trade => trade.candidateId === row.id) : null;
     const candidateAction = type === "candidates" ? (linkedTrade ? `<button type="button" class="quiet" data-open-trade="${escapeHtml(linkedTrade.id)}">トレードを見る</button>` : `<button type="button" class="quiet" data-start-entry="${escapeHtml(row.id)}" aria-label="この候補からエントリーを記録">エントリー</button>`) : "";
-    card.insertAdjacentHTML("beforeend", `<div class="record-info"><h3>${escapeHtml(row.pair)} <span class="${row.direction === "買い" ? "buy" : "sell"}">${escapeHtml(row.direction)}</span></h3><p>${escapeHtml(when?.replace("T", " "))} JST · ${escapeHtml(detail)}</p><small>${escapeHtml(imageSummary)} · ${escapeHtml(outcome)} · ${escapeHtml(row.id)}</small></div><div class="record-actions"><button type="button" class="quiet" data-edit="${escapeHtml(row.id)}" data-type="${type}">開く</button>${candidateAction}</div>`);
+    card.insertAdjacentHTML("beforeend", `<div class="record-info"><h3>${escapeHtml(row.pair || "ペア未指定")} <span class="${row.direction === "買い" ? "buy" : "sell"}">${escapeHtml(row.direction)}</span></h3><p>${escapeHtml(when?.replace("T", " "))} JST · ${escapeHtml(detail)}</p><small>${escapeHtml(imageSummary)} · ${row.exitTimeHint ? `決済目安 ${escapeHtml(row.exitTimeHint.replace("T", " "))} JST（実決済はCSVで確認） · ` : ""}${type === "trades" ? `${row.entryComment ? "理由あり" : "理由未記録"} · ${recordImages.some(image => image.kind === "trade") || linkedCandidateImages.length ? "画像あり" : "画像未記録"} · ${row.entryTimeSource === "hint" ? "目安日時・未照合" : ""} · ` : ""}${escapeHtml(outcome)} · ${escapeHtml(row.id)}</small></div><div class="record-actions"><button type="button" class="quiet" data-edit="${escapeHtml(row.id)}" data-type="${type}">開く</button>${candidateAction}</div>`);
     if (type === "trades" && holder.id === "reviewList") {
       const gallery = document.createElement("div"); gallery.className = "review-image-grid";
       const reviewImages = [...linkedCandidateImages.map(image => ({ image, label: "候補" })), ...recordImages.filter(image => image.kind === "trade").map(image => ({ image, label: "エントリー" })), ...recordImages.filter(image => image.kind === "exit").map(image => ({ image, label: "決済" }))];
@@ -473,16 +555,26 @@ async function editRecord(type, id) {
   showView(type);
   $(`#${kind}Form`).reset();
   state.pending[kind] = [];
-  if (kind === "trade") state.pending.exit = [];
+  if (kind === "trade") { state.pending.exit = []; state.sharedDraft = []; $("#sharedDraftInfo").hidden = true; }
   else state.pending.candidateTrade = [];
   fillForm($(`#${kind}Form`), record);
-  for (const field of $(`#${kind}Form`).querySelectorAll('input[type="datetime-local"]')) delete field.dataset.edited;
+  if (kind === "trade") {
+    $("#tradeForm").elements.namedItem("recordMode").value = record.recordMode || (record.forwardEligible === false || record.recordOrigin === "oanda" ? "journal" : "forward");
+    $("#tradeDetails").open = false;
+    $("#tradeForm").elements.namedItem("recordMode").disabled = true;
+  }
+  for (const field of $(`#${kind}Form`).querySelectorAll('input[type="datetime-local"]')) { delete field.dataset.edited; delete field.dataset.hint; }
   if (kind === "trade") for (const name of ["accountType", "accountId", "pair", "direction"]) $("#tradeForm").elements.namedItem(name).disabled = !!record.oandaTicketId;
   if (kind === "trade") {
     for (const key of ["entryTime", "exitTime"]) if (record[key + "User"] !== undefined) $("#tradeForm").elements.namedItem(key).value = record[key + "User"];
+    if (record.exitTimeHint !== undefined) {
+      const field = $("#tradeForm").elements.namedItem("exitTime");
+      field.value = record.exitTimeHint;
+      field.dataset.hint = "true";
+    }
     const registration = record.registeredAt || record.createdAt;
     const history = [...(record.entryTimeHistory || []).map(item => `エントリー日時: ${item.from || "未入力"} → ${item.to} (${item.changedAt})`), ...(record.exitTimeHistory || []).map(item => `決済日時: ${item.from || "未入力"} → ${item.to} (${item.changedAt})`)];
-    $("#tradeDatetimeInfo").textContent = `登録日時: ${registration ? new Date(registration).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" }) + " JST" : "未記録"}。エントリー: ${record.entryTimeSource === "registration" ? "登録日時の仮入力" : record.entryTimeSource === "oanda" ? "CSV約定日時" : "本人記録・未確認"} / 決済: ${record.exitTimeSource === "registration" ? "仮入力・決済未確認" : record.exitTimeSource === "oanda" ? "CSV全決済" : "本人記録・未確認"}。${record.oandaTicketId ? " CSV約定は保持し、日時の修正は本人メモとして別に保存します。" : ""}日時の変更履歴: ${history.length ? history.join(" / ") : "なし"}`;
+    $("#tradeDatetimeInfo").textContent = `登録日時: ${registration ? new Date(registration).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" }) + " JST" : "未記録"}。エントリー: ${record.entryTimeSource === "hint" ? "目安日時・未照合" : record.entryTimeSource === "registration" ? "登録日時の仮入力" : record.entryTimeSource === "oanda" ? "CSV約定日時" : "本人記録・未確認"} / 決済: ${record.exitTimeSource === "registration" ? "仮入力・決済未確認" : record.exitTimeSource === "oanda" ? "CSV全決済" : record.exitTimeHint ? "画像等の目安・実決済未確認" : "本人記録・未確認"}。${record.oandaTicketId ? " CSV約定は保持し、日時の修正は本人メモとして別に保存します。" : ""}日時の変更履歴: ${history.length ? history.join(" / ") : "なし"}`;
   }
   await renderImages(kind, id);
   if (kind === "trade") {
@@ -519,7 +611,7 @@ async function saveCandidate(event) {
       const noStop = formChecked(form, "candidateNoStop");
       const sl = noStop ? null : numericOrNull(formValue(form, "candidateSl"));
       const candidateEntryTime = enteredTime(form, "candidateEntryTime", now);
-      const trade = { id: newId("T"), candidateId: id, ruleVersion: candidate.ruleVersion, screenerVersion: candidate.screenerVersion, accountType: formValue(form, "candidateAccountType"), accountId: formValue(form, "candidateAccountId"), pair: candidate.pair, direction: candidate.direction, entryTime: candidateEntryTime, entryTimeSource: form.elements.namedItem("candidateEntryTime").dataset.edited === "true" ? "manual" : "registration", entryTimeHistory: [], exitTime: "", exitTimeSource: "unrecorded", exitTimeHistory: [], entryPrice: null, sl, stopStatus: initialStopStatus(sl, noStop), tp: numericOrNull(formValue(form, "candidateTp")), trailingPlanned: formChecked(form, "candidateTrailingPlanned"), riskYen: null, compliance: "", entryComment: formValue(form, "candidateEntryComment"), exitPrice: null, pnlYen: null, pnlR: null, exitReason: "", postReview: "", registeredAt: now, createdAt: now, updatedAt: now };
+      const trade = { id: newId("T"), recordMode: "forward", forwardEligible: true, candidateId: id, ruleVersion: candidate.ruleVersion, screenerVersion: candidate.screenerVersion, accountType: formValue(form, "candidateAccountType"), accountId: formValue(form, "candidateAccountId"), pair: candidate.pair, direction: candidate.direction, entryTime: candidateEntryTime, entryTimeSource: form.elements.namedItem("candidateEntryTime").dataset.edited === "true" ? "manual" : "registration", entryTimeHistory: [], exitTime: "", exitTimeSource: "unrecorded", exitTimeHistory: [], entryPrice: null, sl, stopStatus: initialStopStatus(sl, noStop), tp: numericOrNull(formValue(form, "candidateTp")), trailingPlanned: formChecked(form, "candidateTrailingPlanned"), riskYen: null, compliance: "", entryComment: formValue(form, "candidateEntryComment"), exitPrice: null, pnlYen: null, pnlR: null, exitReason: "", postReview: "", registeredAt: now, createdAt: now, updatedAt: now };
       await saveCandidateAndTrade(candidate, trade, state.pending.candidate, state.pending.candidateTrade);
       const entryImageCount = state.pending.candidateTrade.length;
       resetForm("candidate"); await refresh();
@@ -549,10 +641,23 @@ async function saveTrade(event) {
     const sl = noStop ? null : numericOrNull(formValue(form, "sl"));
     const stopStatus = initialStopStatus(sl, noStop);
     const keepRisk = previous?.sl === sl && stopStatus === "設定あり";
-    const entryTime = previous ? formValue(form, "entryTime") : enteredTime(form, "entryTime", now);
-    const exitTime = formValue(form, "exitTime") || (state.pending.exit.length ? jstInputFromIso(now) : "");
-    const trade = { ...previous, id, candidateId: formValue(form, "candidateId"), ruleVersion: previous?.ruleVersion || RULE_VERSION, accountType: formValue(form, "accountType"), accountId: formValue(form, "accountId"), pair: formValue(form, "pair"), direction: formValue(form, "direction"), entryTime, entryTimeSource: form.elements.namedItem("entryTime").dataset.edited === "true" ? "manual" : (previous?.entryTimeSource || "registration"), entryTimeHistory: datetimeHistory(previous, "entryTime", entryTime, now), entryPrice: previous?.entryPrice ?? null, sl, stopStatus, tp: numericOrNull(formValue(form, "tp")), trailingPlanned: formChecked(form, "trailingPlanned"), riskYen: keepRisk ? previous.riskYen ?? null : null, compliance: formValue(form, "compliance"), entryComment: formValue(form, "entryComment"), exitTime, exitTimeSource: !exitTime ? "unrecorded" : form.elements.namedItem("exitTime").dataset.edited === "true" ? "manual" : (previous?.exitTimeSource || "registration"), exitTimeHistory: datetimeHistory(previous, "exitTime", exitTime, now), exitPrice: previous?.exitPrice ?? null, pnlYen: previous?.pnlYen ?? null, pnlR: keepRisk ? previous.pnlR ?? null : null, exitReason: formValue(form, "exitReason"), postReview: formValue(form, "postReview"), registeredAt: previous?.registeredAt || previous?.createdAt || now, createdAt: previous?.createdAt || now, updatedAt: now };
+    const entryTime = formValue(form, "entryTime");
+    const enteredExitTime = formValue(form, "exitTime");
+    const isJournal = previous ? previous.recordMode === "journal" || previous.recordOrigin === "oanda" || previous.forwardEligible === false : formValue(form, "recordMode") !== "forward";
+    const hintExit = form.elements.namedItem("exitTime").dataset.hint === "true" || previous?.exitTimeHint !== undefined || isJournal;
+    const exitTime = hintExit ? previous?.exitTime || "" : enteredExitTime;
+    if (!previous && !isJournal && (!formValue(form, "pair") || !formValue(form, "accountType"))) throw new Error("フォワード検証にはペアと口座区分を指定してください");
+    const trade = { ...previous, id, candidateId: formValue(form, "candidateId"), ruleVersion: previous?.ruleVersion || (isJournal ? "未分類（通常記録）" : RULE_VERSION), accountType: formValue(form, "accountType"), accountId: formValue(form, "accountId"), pair: formValue(form, "pair"), direction: formValue(form, "direction"), entryTime, entryTimeSource: isJournal && !previous?.oandaTicketId ? "hint" : form.elements.namedItem("entryTime").dataset.edited === "true" ? "manual" : (previous?.entryTimeSource || "registration"), entryTimeHistory: datetimeHistory(previous, "entryTime", entryTime, now), entryPrice: previous?.entryPrice ?? null, sl, stopStatus, tp: numericOrNull(formValue(form, "tp")), trailingPlanned: formChecked(form, "trailingPlanned"), riskYen: keepRisk ? previous.riskYen ?? null : null, compliance: formValue(form, "compliance"), entryComment: formValue(form, "entryComment"), exitTime, exitTimeSource: !exitTime ? "unrecorded" : form.elements.namedItem("exitTime").dataset.edited === "true" ? "manual" : (previous?.exitTimeSource || "registration"), exitTimeHistory: datetimeHistory(previous, "exitTime", exitTime, now), exitPrice: previous?.exitPrice ?? null, pnlYen: previous?.pnlYen ?? null, pnlR: keepRisk ? previous.pnlR ?? null : null, exitReason: formValue(form, "exitReason"), postReview: formValue(form, "postReview"), registeredAt: previous?.registeredAt || previous?.createdAt || now, createdAt: previous?.createdAt || now, updatedAt: now };
 
+    if (hintExit) {
+      trade.exitTimeHint = enteredExitTime;
+      trade.exitTimeHintSource = !enteredExitTime ? "unrecorded" : form.elements.namedItem("exitTime").dataset.edited === "true" ? "user_estimate" : (previous?.exitTimeHint ? previous.exitTimeHintSource : "image_attachment") || "image_attachment";
+      trade.exitTimeHintHistory = datetimeHistory(previous, "exitTimeHint", enteredExitTime, now);
+      trade.exitTimeSource = previous?.exitTimeSource || "unrecorded";
+      trade.exitTimeHistory = previous?.exitTimeHistory || [];
+    }
+    if (!previous) { trade.recordMode = isJournal ? "journal" : "forward"; trade.recordOrigin = "manual"; trade.forwardEligible = !isJournal; }
+    if (isJournal && (!previous?.oandaTicketId || form.elements.namedItem("entryTime").dataset.edited === "true")) { trade.entryTimeHint = entryTime; trade.entryTimeHintSource = "user_estimate"; }
     if (previous?.oandaTicketId) {
       for (const name of ["accountType", "accountId", "pair", "direction"]) trade[name] = previous[name];
       for (const key of ["entryTime", "exitTime"]) if (previous[key + "Oanda"]) {
@@ -595,15 +700,15 @@ async function exportBackup() {
   try {
     const [candidates, trades, images, received, oandaRows, oandaFiles] = await Promise.all([getAll("candidates"), getAll("trades"), getAll("images"), getAll("shareInbox"), getAll("oandaRows"), getAll("oandaFiles")]);
     const encoded = [];
-    for (const image of images) encoded.push({ id: image.id, recordId: image.recordId, kind: image.kind, receiptId: image.receiptId || null, name: image.name, mime: image.mime, addedAt: image.addedAt, receivedAt: image.receivedAt || null, dataUrl: await imageToDataUrl(image.file) });
+    for (const image of images) encoded.push({ id: image.id, recordId: image.recordId, kind: image.kind, receiptId: image.receiptId || null, name: image.name, mime: image.mime, batchId: image.batchId || null, addedAt: image.addedAt, receivedAt: image.receivedAt || null, dataUrl: await imageToDataUrl(image.file) });
     const unassignedImages = [];
-    for (const image of received) unassignedImages.push({ id: image.id, name: image.name, mime: image.mime, receivedAt: image.receivedAt, status: "unassigned", dataUrl: await imageToDataUrl(image.file) });
+    for (const image of received) unassignedImages.push({ id: image.id, name: image.name, mime: image.mime, receivedAt: image.receivedAt, status: "unassigned", batchId: image.batchId || null, dataUrl: await imageToDataUrl(image.file) });
     const sourceFiles = [];
     for (const source of oandaFiles) {
       const { file, ...metadata } = source;
       sourceFiles.push({ ...metadata, dataUrl: await imageToDataUrl(file) });
     }
-    const backup = { schema: "mk-forward-v02", ruleVersion: RULE_VERSION, screenerVersion: SCREENER_VERSION, exportedAt: new Date().toISOString(), candidates, trades, images: encoded, unassignedImages, oandaRows, oandaFiles: sourceFiles };
+    const backup = { schema: "mk-forward-v02", featureVersion: "csv-link-2", ruleVersion: RULE_VERSION, screenerVersion: SCREENER_VERSION, exportedAt: new Date().toISOString(), candidates, trades, images: encoded, unassignedImages, oandaRows, oandaFiles: sourceFiles };
     download(`MK裁量V02_完全バックアップ_${jstNow().slice(0, 10)}.json`, new Blob([JSON.stringify(backup)], { type: "application/json" }));
     setStatus("#backupStatus", `書き出しました: 候補${candidates.length}件・トレード${trades.length}件・添付画像${images.length}枚・未割当画像${received.length}枚・OANDA明細${oandaRows.length}行`);
   } catch (error) { setStatus("#backupStatus", `バックアップ失敗: ${error.message}`, true); }
@@ -636,11 +741,13 @@ async function importBackup(file) {
       }
     }
     const candidates = backup.candidates.filter(row => typeof row.id === "string" && row.screenerVersion === SCREENER_VERSION && PAIRS.includes(row.pair) && !knownC.has(row.id));
-    const trades = backup.trades.filter(row => typeof row.id === "string" && row.screenerVersion === SCREENER_VERSION && PAIRS.includes(row.pair) && !knownT.has(row.id));
+    const invalidTrades = backup.trades.filter(row => row.screenerVersion !== SCREENER_VERSION || !(PAIRS.includes(row.pair) || (row.recordMode === "journal" && row.pair === "" && ["買い", "売り"].includes(row.direction))));
+    if (invalidTrades.length) throw new Error(`復元できないトレードが${invalidTrades.length}件あります。処理は反映していません`);
+    const trades = backup.trades.filter(row => !knownT.has(row.id));
     const validParents = new Set([...oldC, ...oldT, ...candidates, ...trades].map(row => row.id).filter(id => !conflictingIds.has(id)));
-    const images = backup.images.filter(row => typeof row.id === "string" && validParents.has(row.recordId) && !knownI.has(row.id)).map(row => ({ id: row.id, recordId: row.recordId, kind: row.kind, receiptId: row.receiptId || null, name: row.name, mime: row.mime, addedAt: row.addedAt, receivedAt: row.receivedAt || null, file: dataUrlToBlob(row.dataUrl) }));
+    const images = backup.images.filter(row => typeof row.id === "string" && validParents.has(row.recordId) && !knownI.has(row.id)).map(row => ({ id: row.id, recordId: row.recordId, kind: row.kind, receiptId: row.receiptId || null, name: row.name, mime: row.mime, batchId: row.batchId || null, addedAt: row.addedAt, receivedAt: row.receivedAt || null, file: dataUrlToBlob(row.dataUrl) }));
     const knownReceived = new Set([...oldReceived.map(row => row.id), ...oldI.map(row => row.receiptId || row.id), ...images.map(row => row.receiptId || row.id)]);
-    const unassignedImages = incomingReceived.filter(row => typeof row.id === "string" && !knownReceived.has(row.id)).map(row => ({ id: row.id, name: row.name || "共有画像", mime: row.mime, receivedAt: row.receivedAt, status: "unassigned", file: dataUrlToBlob(row.dataUrl) }));
+    const unassignedImages = incomingReceived.filter(row => typeof row.id === "string" && !knownReceived.has(row.id)).map(row => ({ id: row.id, name: row.name || "共有画像", mime: row.mime, receivedAt: row.receivedAt, batchId: row.batchId || null, status: "unassigned", file: dataUrlToBlob(row.dataUrl) }));
     const knownOandaRows = new Set(oldOandaRows.map(row => row.id));
     const oandaRows = incomingOandaRows.filter(row => typeof row.id === "string" && !knownOandaRows.has(row.id));
     const knownSources = new Set(oldSources.map(row => row.id));
@@ -661,7 +768,7 @@ async function importBackup(file) {
       for (const row of unassignedImages) tx.objectStore("shareInbox").add(row);
       for (const row of oandaRows) tx.objectStore("oandaRows").add(row);
       for (const row of sourceFiles) tx.objectStore("oandaFiles").add(row);
-      tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error || new Error("復元が中断されました"));
+      tx.oncomplete = resolve; tx.onerror = () => reject(tx.error || new Error("保存処理が中断されました。画像の割当状況を確認してください")); tx.onabort = () => reject(tx.error || new Error("復元が中断されました"));
     });
     await refresh();
     setStatus("#backupStatus", `追加しました: 候補${candidates.length}件・トレード${trades.length}件・添付画像${images.length}枚・未割当画像${unassignedImages.length}枚・OANDA明細${oandaRows.length}行。${conflictingIds.size ? `同じIDで内容が異なる${conflictingIds.size}件は上書きせず、添付画像も取り込んでいません。元端末の記録を確認してください。` : "同じIDは上書きしていません。"}`, !!conflictingIds.size);
@@ -700,6 +807,10 @@ function wireEvents() {
       state.pending[kind].push(file);
     }
     input.value = "";
+    if (kind === "exit" && state.pending.exit.length) {
+      const field = $("#tradeForm").elements.namedItem("exitTime");
+      if (!field.value) { field.value = jstNow(); field.dataset.hint = "true"; delete field.dataset.edited; }
+    }
     try {
       await renderImages(kind, kind === "candidate" ? $("#candidateForm").elements.namedItem("id").value : kind === "candidateTrade" ? "" : $("#tradeForm").elements.namedItem("id").value);
       const label = kind === "exit" ? "決済画像" : kind === "trade" || kind === "candidateTrade" ? "エントリー画像" : "画像";
@@ -748,6 +859,7 @@ function wireEvents() {
   $("#exportCandidatesCsv").addEventListener("click", () => exportCsv("candidates"));
   $("#exportTradesCsv").addEventListener("click", () => exportCsv("trades"));
   $("#oandaCsvInput").addEventListener("change", event => { previewOandaFile(event.target.files[0]); event.target.value = ""; });
+  $("#confirmCsvAccount").addEventListener("change", clearOandaPreview);
   $("#oandaAccountType").addEventListener("change", clearOandaPreview);
   $("#oandaAccountId").addEventListener("input", clearOandaPreview);
   $("#applyOandaCsv").addEventListener("click", applyOandaImport);
@@ -788,11 +900,12 @@ async function init() {
   wireEvents(); resetForm("candidate"); resetForm("trade");
   setupInstallHelp();
   try {
-    await dbReady; await refresh();
+    await dbReady; await refresh(); showView("trades");
     const params = new URLSearchParams(location.search);
     if (params.has("shared")) {
-      showView("inbox"); await refresh();
       const received = (await getAll("shareInbox")).filter(row => row.batchId === params.get("shared"));
+      if (received.length) await startSharedEntry(received);
+      else { showView("inbox"); await refresh(); }
       setStatus("#receiveStatus", received.length ? `共有画像${received.length}枚を端末内に保存しました。取引と画像区分はここから選べます。` : "今回の受信画像は見つかりません。割当済みの記録または共有元を確認してください。", !received.length);
       history.replaceState(null, "", location.pathname);
     }

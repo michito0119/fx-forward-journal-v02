@@ -122,7 +122,7 @@ export function bundleOandaRows(rows) {
 }
 
 // A match must be unique in both directions, within one explicitly named account.
-export function planOandaImport(bundles, trades, accountType, accountId, pairs) {
+export function planOandaImport(bundles, trades, accountType, accountId, pairs, options = {}) {
   const sameAccount = trade => trade.accountType === accountType && trade.accountId === accountId;
   const proposals = bundles.map(bundle => {
     const hold = note => ({ ...bundle, action: "保留", note });
@@ -140,15 +140,53 @@ export function planOandaImport(bundles, trades, accountType, accountId, pairs) 
           (trade.quantity != null && trade.quantity !== entry.quantity)) return hold("照合済み記録と新規約定が矛盾しています");
       return { ...bundle, action: "更新", tradeId: trade.id, note: "口座・チケットと新規約定が一致" };
     }
+    const compatible = trade => !trade.oandaTicketId &&
+      (!trade.accountType || trade.accountType === accountType) &&
+      (!trade.accountId || trade.accountId === accountId) &&
+      (!trade.pair || trade.pair === entry.pair) && trade.direction === entry.direction;
+    const timeDistance = (trade, execution = entry) => {
+      const value = trade.entryTimeHint || trade.entryTimeUser || trade.entryTime;
+      const time = Date.parse(value ? `${value}${value.length === 16 ? ":00" : ""}+09:00` : "");
+      return Number.isFinite(time) ? Math.abs(time - Date.parse(execution.datetimeIso)) : Infinity;
+    };
+    const allCandidates = trades.filter(compatible).sort((a,b) => timeDistance(a)-timeDistance(b) || a.id.localeCompare(b.id));
+    const choice = Object.hasOwn(options.choices || {}, bundle.ticketId) ? options.choices[bundle.ticketId] : "";
+    if (choice === "__new__") return { ...bundle, action: "新規追加", matchMethod: "user-new", note: "本人確認：対応する既存記録なし。CSV由来として追加" };
+    if (choice) {
+      const selected = allCandidates.find(trade => trade.id === choice);
+      if (!selected) return hold("選んだ記録は照合できません。候補を確認し直してください");
+      return { ...bundle, action: "照合", tradeId: selected.id, candidateTradeIds: allCandidates.map(t=>t.id), matchMethod: "user", note: `本人が画像・日時差を確認: ${selected.id}` };
+    }
+    // Hints are not execution evidence. Search pair/side/account broadly without
+    // a time cutoff: late registration must not create a second CSV-only trade.
+    const memoCandidates = allCandidates.filter(trade => trade.recordMode === "journal" || trade.entryTimeSource === "hint" || !trade.pair);
+    if (memoCandidates.length) {
+      const nearby = allCandidates.filter(trade => timeDistance(trade) <= 2 * 60 * 60 * 1000);
+      const best = memoCandidates[0];
+      // Search every entry, including unsafe/partial bundles. They still compete
+      // for the memo even though they cannot be imported automatically.
+      const rivals = (options.competitionBundles || bundles).filter(other =>
+        other.items.some(event => event.kind === "新規取引" &&
+          (!event.direction || event.direction === best.direction) && (!best.pair || !event.pair || event.pair === best.pair) &&
+          (!event.datetimeIso || timeDistance(best, event) <= 2 * 60 * 60 * 1000)));
+      const rivalIds = new Set(rivals.map(other=>other.ticketId));
+      for (const linkedTrade of trades) if (sameAccount(linkedTrade) && linkedTrade.oandaTicketId && linkedTrade.entryTimeOanda &&
+        linkedTrade.direction === best.direction && (!best.pair || linkedTrade.pair === best.pair) &&
+        timeDistance(best, { datetimeIso: linkedTrade.entryTimeOanda }) <= 2 * 60 * 60 * 1000) rivalIds.add(linkedTrade.oandaTicketId);
+      const accountConfirmed = (best.accountId === accountId && best.accountType === accountType) || options.allowUnassignedAccount === true;
+      if (accountConfirmed && timeDistance(best) <= 30 * 60 * 1000 && nearby.length === 1 && rivalIds.size === 1)
+        return { ...bundle, action: "照合", tradeId: best.id, candidateTradeIds: allCandidates.map(t=>t.id), matchMethod: "auto-near", accountConfirmedBy: best.accountId === accountId && best.accountType === accountType ? "record" : "import-consent", note: "自動候補：30分以内・方向一致・口座確認済み・前後2時間の対応が双方で一意" };
+      return { ...hold(`要確認：${allCandidates.length}件。日時が近い順に画像と理由を確認してください`), candidateTradeIds: allCandidates.map(t=>t.id) };
+    }
     // Unknown account and provisional dates cannot prove absence of a journal record.
     const possible = trades.filter(trade => trade.accountType === accountType &&
       (!trade.accountId || trade.accountId === accountId) &&
       trade.pair === entry.pair && trade.direction === entry.direction &&
       (!trade.oandaTicketId || !trade.accountId));
     if (possible.some(trade => !trade.accountId || trade.entryTimeSource !== "manual"))
-      return hold("口座未設定または仮日時の記録があります。記録の口座名・実際の日時を確認してください");
+      return { ...hold("口座未設定または仮日時の記録があります。候補を選んで確認してください"), candidateTradeIds: allCandidates.map(t=>t.id) };
     const candidates = possible.filter(trade => Math.abs(Date.parse(`${trade.entryTime}:00+09:00`) - Date.parse(entry.datetimeIso)) <= 30 * 60 * 1000);
-    if (candidates.length > 1) return hold(`照合候補が${candidates.length}件あります`);
+    if (candidates.length > 1) return { ...hold(`照合候補が${candidates.length}件あります`), candidateTradeIds: allCandidates.map(t=>t.id) };
     if (candidates.length === 1) return { ...bundle, action: "照合", tradeId: candidates[0].id, note: `日時・口座・ペア・方向が一意一致: ${candidates[0].id}` };
     return { ...bundle, action: "新規追加", note: "CSV由来の記録として追加（フォワード検証の対象外）" };
   });

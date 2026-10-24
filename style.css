@@ -78,3 +78,11 @@ input:disabled{opacity:.55}
 #oandaPreview .record-card{overflow-wrap:anywhere}
 #oandaPreview .record-card p{white-space:normal}
 #tradeDatetimeInfo{overflow-wrap:anywhere}
+
+/* Simple entry: compact previews expand on tap; details stay optional. */
+#tradeForm .entry-photo .thumb:first-child{width:88px;height:88px}
+#tradeForm .entry-photo .thumb:first-child img{object-fit:contain}
+#tradeForm #sharedDraftInfo{margin:0}
+#tradeDetails>label,#tradeDetails>.grid,#tradeDetails>.checks{margin-top:14px}
+
+.csv-match-card{flex-direction:column;min-width:0}.csv-match-card select{max-width:100%}.csv-memo-candidate{margin-top:12px;padding-top:10px;border-top:1px solid #395061;overflow-wrap:anywhere}.csv-memo-candidate .thumb:first-child{width:88px;height:88px}
