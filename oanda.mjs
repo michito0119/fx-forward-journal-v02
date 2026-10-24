@@ -159,7 +159,7 @@ export function planOandaImport(bundles, trades, accountType, accountId, pairs, 
     }
     // Hints are not execution evidence. Search pair/side/account broadly without
     // a time cutoff: late registration must not create a second CSV-only trade.
-    const memoCandidates = allCandidates.filter(trade => trade.recordMode === "journal" || trade.entryTimeSource === "hint" || !trade.pair);
+    const memoCandidates = allCandidates.filter(trade => trade.recordMode === "journal" || trade.entryTimeSource === "hint" || trade.entryTimeSource === "registration" || !trade.entryTimeSource || !trade.accountId || !trade.accountType || !trade.pair);
     if (memoCandidates.length) {
       const nearby = allCandidates.filter(trade => timeDistance(trade) <= 2 * 60 * 60 * 1000);
       const best = memoCandidates[0];
@@ -176,7 +176,11 @@ export function planOandaImport(bundles, trades, accountType, accountId, pairs, 
       const accountConfirmed = (best.accountId === accountId && best.accountType === accountType) || options.allowUnassignedAccount === true;
       if (accountConfirmed && timeDistance(best) <= 30 * 60 * 1000 && nearby.length === 1 && rivalIds.size === 1)
         return { ...bundle, action: "照合", tradeId: best.id, candidateTradeIds: allCandidates.map(t=>t.id), matchMethod: "auto-near", accountConfirmedBy: best.accountId === accountId && best.accountType === accountType ? "record" : "import-consent", note: "自動候補：30分以内・方向一致・口座確認済み・前後2時間の対応が双方で一意" };
-      return { ...hold(`要確認：${allCandidates.length}件。日時が近い順に画像と理由を確認してください`), candidateTradeIds: allCandidates.map(t=>t.id) };
+      const reason = !accountConfirmed ? "口座確認が必要です。同じ口座の記録なら確認チェックを入れ、CSVを選び直してください" :
+        !Number.isFinite(timeDistance(best)) ? "目安日時が未記録または不正です。日時を補完するか候補を確認してください" :
+        timeDistance(best) > 30 * 60 * 1000 ? `目安と約定が${Math.round(timeDistance(best)/60000)}分離れています（自動候補は30分以内）。画像を見て候補を確認してください` :
+        `近い日時に複数の対応があります（記録${nearby.length}件・約定${rivalIds.size}件）。画像を見て候補を確認してください`;
+      return { ...hold(reason), candidateTradeIds: allCandidates.map(t=>t.id) };
     }
     // Unknown account and provisional dates cannot prove absence of a journal record.
     const possible = trades.filter(trade => trade.accountType === accountType &&

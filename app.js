@@ -356,7 +356,7 @@ function renderOandaPreview() {
     const candidates = (row.candidateTradeIds || []).map(id => p.trades.find(trade=>trade.id===id)).filter(Boolean);
     if (candidates.length) {
       const select = document.createElement("select"); select.setAttribute("aria-label", `チケット${row.ticketId}の対応記録`);
-      select.add(new Option("自動判定／保留に戻す", ""));
+      select.add(new Option("自動判定を使用（個別選択しない）", ""));
       for (const t of candidates) select.add(new Option(`${t.entryTimeHint || t.entryTime || "日時未記録"} · ${t.pair || "ペア未指定"} ${t.direction} · ${t.entryComment || "理由未記録"} · ${t.id}`, t.id));
       select.add(new Option("対応する記録なし：新規追加を確認", "__new__"));
       select.value = p.choices[row.ticketId] || "";
