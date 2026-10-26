@@ -183,7 +183,7 @@ function resetForm(kind) {
 }
 
 async function refresh() {
-  const [candidates, trades, images, received] = await Promise.all([getAll("candidates"), getAll("trades"), getAll("images"), getAll("shareInbox")]);
+  const [candidates, trades, images, received, csvRows] = await Promise.all([getAll("candidates"), getAll("trades"), getAll("images"), getAll("shareInbox"), getAll("oandaRows")]);
   $("#countCandidates").textContent = candidates.length;
   $("#countTrades").textContent = trades.length;
   $("#countImages").textContent = images.length;
@@ -196,10 +196,10 @@ async function refresh() {
   if ($("#view-records").classList.contains("active")) renderList(candidates, trades, images);
   if ($("#view-holdings").classList.contains("active")) renderHoldings(trades, images);
   if (["records", "inbox"].some(view => $(`#view-${view}`).classList.contains("active"))) renderReceivedImages(received, candidates, trades);
-  if ($("#view-review").classList.contains("active")) renderReview(trades, images);
+  if ($("#view-review").classList.contains("active")) renderReview(trades, images, csvRows);
 }
 
-function renderReview(trades, images) {
+function renderReview(trades, images, csvRows) {
   const matchedClosed = trades.filter(isConfirmedClosed);
   const filtered = trades.filter(row => {
     
@@ -213,6 +213,71 @@ function renderReview(trades, images) {
   $("#reviewCount").textContent = `表示 ${filtered.length}件 · 勝敗判定対象 ${matchedClosed.length}件（OANDA照合済み・全決済）`;
   $$("[data-review]").forEach(button => button.classList.toggle("selected", button.dataset.review === state.reviewFilter));
   renderListRows(filtered, images, $("#reviewList"), "trades", trades);
+  renderSavedHistory(csvRows, trades);
+}
+
+
+function factNumber(value, suffix = "") {
+  return value != null && value !== "" && Number.isFinite(Number(value)) ? `${Number(value).toLocaleString("ja-JP", { maximumFractionDigits: 8 })}${suffix}` : "未記録";
+}
+function factTime(value) {
+  if (!value) return "未確認";
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? `${date.toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", hour12: false })} JST` : "日時不正・要確認";
+}
+function appendTradeFacts(card, row) {
+  const linked = !!row.oandaTicketId;
+  const held = row.reconciliationStatus === "held";
+  const closed = isConfirmedClosed(row);
+  const status = held ? "照合保留・要確認" : closed ? "CSV照合済み・全決済" : linked ? "CSV紐づけ済み・決済情報を確認" : "CSV未照合";
+  const explanation = held ? (row.reconciliationNote || "CSVとの対応を確認してください。") : !linked ? "画像の記録は保存済みです。CSVとの対応が未確定のため、実約定・損益は未確認です。" : !row.exitTimeOanda ? "決済明細が紐づいていません。決済を含むCSVで補完します。" : !closed ? "決済情報または損益の確認が必要です。" : "約定情報はOANDA CSV、画像・理由は本人の記録です。";
+  const facts = document.createElement("section"); facts.className = "trade-facts";
+  const pairs = [
+    ["エントリー約定日時", factTime(row.entryTimeOanda)],
+    ["エントリー価格", row.entryTimeOanda ? factNumber(row.entryPrice) : "CSV未確認"],
+    ["決済約定日時", factTime(row.exitTimeOanda)],
+    ["決済価格", row.exitTimeOanda ? factNumber(row.exitPrice) : "CSV未確認"],
+    ["売買損益", closed ? factNumber(row.pnlYen, "円") : "未確定"],
+    ["損益pips", closed ? factNumber(row.pips, " pips") : "未確定"],
+    ["数量", linked ? factNumber(row.quantity) : "CSV未確認"],
+    ["スワップ / 手数料", closed ? `${factNumber(row.swapYen, "円")} / ${factNumber(row.feeYen, "円")}` : "未確定"],
+    ["エントリー理由", row.entryComment || "未記録"],
+    ["決済理由", row.exitReason || "未記録（任意）"],
+    ["振り返りメモ", row.postReview || "未記録"],
+    ["記録のルール版", row.ruleVersion || "未記録"],
+  ];
+  facts.innerHTML = `<strong>${escapeHtml(status)}</strong><p>${escapeHtml(explanation)}</p><dl>${pairs.map(([label,value])=>`<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl><details><summary>記録の日時・出典</summary><p>登録日時: ${escapeHtml(factTime(row.registeredAt || row.createdAt))}</p><p>エントリー目安: ${escapeHtml(row.entryTimeHint || row.entryTimeUser || (!linked ? row.entryTime : "") || "未記録")}</p><p>決済目安: ${escapeHtml(row.exitTimeHint || "未記録")}</p><p>口座: ${escapeHtml(row.accountType || "未設定")} / ${escapeHtml(row.accountId || "未設定")} · チケット: ${escapeHtml(row.oandaTicketId || "未照合")}</p></details>`;
+  card.append(facts);
+}
+
+function renderSavedHistory(rows, trades) {
+  const holder = $("#savedCsvHistory"); holder.replaceChildren();
+  const accounts = new Map();
+  for (const row of rows) {
+    const key = JSON.stringify([row.accountType, row.accountId]);
+    if (!accounts.has(key)) accounts.set(key, []);
+    accounts.get(key).push(row);
+  }
+  let count = 0, unlinked = 0;
+  for (const accountRows of accounts.values()) {
+    const { accountType, accountId } = accountRows[0];
+    for (const bundle of bundleOandaRows(accountRows)) {
+      if (bundle.status.startsWith("取引対象外")) continue;
+      count++;
+      const matches = trades.filter(t => t.accountType === accountType && t.accountId === accountId && t.oandaTicketId === bundle.ticketId && !!bundle.ticketId);
+      if (!matches.length) unlinked++;
+      const detail = document.createElement("details"); detail.className = "saved-csv-card";
+      const label = matches.length ? `記録に紐づけ済み (${matches.map(t=>t.id).join(", ")})` : "画像・記録との対応は未確定";
+      detail.innerHTML = `<summary>${escapeHtml(accountType)} / ${escapeHtml(accountId)} · チケット ${escapeHtml(bundle.ticketId || "不明")} · ${escapeHtml(bundle.status)} · ${escapeHtml(label)}</summary><p>以下は保存されたCSVの明細です。部分決済・重複候補を含むため、行の損益を合計してトレード成績にはしません。</p>`;
+      for (const item of bundle.items) {
+        const line = document.createElement("div"); line.className = "csv-fact-row";
+        line.textContent = `${item.kind} · ${item.pair || "銘柄未記録"} ${item.direction} · ${item.datetimeJst || "日時未記録"} JST · 数量 ${factNumber(item.quantity)} · 約定価格 ${factNumber(item.price)} · 明細の売買損益 ${factNumber(item.spotPnlYen, "円")} · 元CSV ${item.sourceFile || "不明"} / ${item.rowNumber}行目`;
+        detail.append(line);
+      }
+      holder.append(detail);
+    }
+  }
+  $("#savedCsvSummary").textContent = rows.length ? `保存CSV ${rows.length}明細 · 取引 ${count}件 · 記録との対応未確定 ${unlinked}件（この欄は絞り込み対象外）` : "この端末にはCSV明細が保存されていません。CSV照合で履歴を選び、一括反映すると保存されます。";
 }
 
 function renderReceivedImages(received, candidates, trades) {
@@ -474,11 +539,14 @@ async function applyOandaImport() {
       tx.onerror = () => reject(tx.error || new Error("保存処理が中断されました。画像の割当状況を確認してください"));
       tx.onabort = () => reject(failure || tx.error || new Error("CSV反映が中断されました"));
     });
-    state.oandaPreview = null;
-    await refresh();
+    clearOandaPreview();
     const heldCount = preview.proposals.filter(row => row.action === "保留").length;
     const excludedCount = preview.proposals.filter(row => row.action === "対象外").length;
     setStatus("#oandaStatus", `反映しました: トレード${result.updated}件・新規明細${result.incoming}行。保留${heldCount}件・取引対象外${excludedCount}件。元CSVも画像込みバックアップの対象です。`);
+    $("#oandaStatus").scrollIntoView({ block: "center" });
+    try { await refresh(); } catch {
+      $("#oandaStatus").textContent += " 保存は完了しましたが画面の更新に失敗しました。アプリを開き直してください。";
+    }
   } catch (error) {
     state.oandaPreview = null;
     setStatus("#oandaStatus", `反映できませんでした: ${error.message}`, true);
@@ -529,10 +597,12 @@ function renderListRows(rows, images, holder, type, trades = []) {
     const candidateAction = type === "candidates" ? (linkedTrade ? `<button type="button" class="quiet" data-open-trade="${escapeHtml(linkedTrade.id)}">トレードを見る</button>` : `<button type="button" class="quiet" data-start-entry="${escapeHtml(row.id)}" aria-label="この候補からエントリーを記録">エントリー</button>`) : "";
     card.insertAdjacentHTML("beforeend", `<div class="record-info"><h3>${escapeHtml(row.pair || "ペア未指定")} <span class="${row.direction === "買い" ? "buy" : "sell"}">${escapeHtml(row.direction)}</span></h3><p>${escapeHtml(when?.replace("T", " "))} JST · ${escapeHtml(detail)}</p><small>${escapeHtml(imageSummary)} · ${row.exitTimeHint ? `決済目安 ${escapeHtml(row.exitTimeHint.replace("T", " "))} JST（実決済はCSVで確認） · ` : ""}${type === "trades" ? `${row.entryComment ? "理由あり" : "理由未記録"} · ${recordImages.some(image => image.kind === "trade") || linkedCandidateImages.length ? "画像あり" : "画像未記録"} · ${row.entryTimeSource === "hint" ? "目安日時・未照合" : ""} · ` : ""}${escapeHtml(outcome)} · ${escapeHtml(row.id)}</small></div><div class="record-actions"><button type="button" class="quiet" data-edit="${escapeHtml(row.id)}" data-type="${type}">開く</button>${candidateAction}</div>`);
     if (type === "trades" && holder.id === "reviewList") {
+
       const gallery = document.createElement("div"); gallery.className = "review-image-grid";
       const reviewImages = [...linkedCandidateImages.map(image => ({ image, label: "候補" })), ...recordImages.filter(image => image.kind === "trade").map(image => ({ image, label: "エントリー" })), ...recordImages.filter(image => image.kind === "exit").map(image => ({ image, label: "決済" }))];
       for (const item of reviewImages) { const cell = document.createElement("div"); cell.className = "review-image-item"; const label = document.createElement("small"); label.textContent = item.label; cell.append(label, previewButton(item.image.file, false)); gallery.append(cell); }
       if (reviewImages.length) card.append(gallery);
+      appendTradeFacts(card, row);
     }
     holder.append(card);
   }

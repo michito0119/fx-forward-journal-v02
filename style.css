@@ -86,3 +86,13 @@ input:disabled{opacity:.55}
 #tradeDetails>label,#tradeDetails>.grid,#tradeDetails>.checks{margin-top:14px}
 
 .csv-match-card{flex-direction:column;min-width:0}.csv-match-card select{max-width:100%}.csv-memo-candidate{margin-top:12px;padding-top:10px;border-top:1px solid #395061;overflow-wrap:anywhere}.csv-memo-candidate .thumb:first-child{width:88px;height:88px}
+
+/* Trade review: actual executions and personal notes have distinct provenance. */
+.trade-facts{width:100%;min-width:0;border-top:1px solid #405365;padding-top:12px}
+.trade-facts strong{color:#d6ffed}.trade-facts dl{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:12px 0}
+.trade-facts dt{font-size:11px;color:#9fb4c0}.trade-facts dd{margin:4px 0 0;font-size:14px;white-space:pre-wrap;overflow-wrap:anywhere}
+#reviewList .trade-facts p{white-space:normal;overflow:visible;font-size:12px;line-height:1.6;overflow-wrap:anywhere}
+.trade-facts summary,.saved-csv-card summary{cursor:pointer;overflow-wrap:anywhere}
+.saved-history{margin-top:28px;font-size:13px}.saved-csv-card{padding:14px;margin:10px 0;background:#1a2635;border:1px solid #405365;border-radius:10px}
+.csv-fact-row{padding:10px 0;border-top:1px solid #405365;overflow-wrap:anywhere;line-height:1.7}
+@media(max-width:350px){.trade-facts dl{grid-template-columns:1fr}}
